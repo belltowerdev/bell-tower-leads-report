@@ -337,8 +337,21 @@ def format_thread_for_display(thread):
         if not subsource:
             subsource = 'inbound_sms'
     
+    # Generate a stable thread_id if missing
+    thread_id = thread.get('thread_id') or thread.get('phone', '')
+    if not thread_id:
+        # Use customer_name + source as fallback
+        customer_name = thread.get('first_name', '') or thread.get('lead_data', {}).get('prospect_name', '')
+        customer_email = thread.get('lead_data', {}).get('prospect_email', '')
+        if customer_email:
+            thread_id = f"email-{customer_email}"
+        elif customer_name:
+            thread_id = f"unknown-{customer_name.lower().replace(' ', '-')}"
+        else:
+            thread_id = f"unknown-{uuid.uuid4().hex[:8]}"
+    
     return {
-        'thread_id': thread.get('thread_id') or thread.get('phone', ''),
+        'thread_id': thread_id,
         'source': source,
         'subsource': subsource,
         'status': thread.get('status', 'open'),
