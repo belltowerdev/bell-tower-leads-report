@@ -380,39 +380,82 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
             break
         page += 1
     
-    # Merge in GHL leads from the webhook log that don't appear in the API results
+    # Merge in GHL leads from thread files that aren't in the API results
     # (existing contacts re-submitting the webform keep their original dateAdded,
     # so they don't show up in the date-filtered API search).
     seen_emails = {l.get('email', '').lower() for l in leads if l.get('email')}
     seen_phones = {l.get('phone', '') for l in leads if l.get('phone')}
-    webhook_log = "/home/ubuntu/.hermes/vapi-build/logs/vapi-webhook-stdout.log"
-    try:
-        for line in open(webhook_log, errors='ignore'):
-            if '[GHL-FORM] name=' not in line:
+
+    # Scan ghl-lead-*.json thread files directly for today's submissions
+    import glob as _glob
+    for thread_file in _glob.glob(str(THREADS_DIR / 'ghl-lead-*.json')):
+        try:
+            with open(thread_file) as tf:
+                td = json.load(tf)
+        
+            # Check first message timestamp
+            if not td.get('messages'):
                 continue
-            # Extract the date from the log line (format: 2026-08-06 ...)
-            # Log lines start with YYYY-MM-DD HH:MM:SS
-            line_date = line[:10]  # First 10 chars are the date
-            try:
-                line_dt = datetime.strptime(line_date, "%Y-%m-%d").replace(tzinfo=CT)
-                # Skip if this line's date is outside the requested range
-                if not (start_ct <= line_dt <= end_ct):
-                    continue
-            except:
+        
+            first_msg = td['messages'][0]
+            ts_str = first_msg.get('timestamp', '')
+            if not ts_str:
                 continue
-            # Parse: name=X | email=Y | phone=Z | event_type=W | notes=...
-            parts = line.split('[GHL-FORM] name=')[1]
-            name = parts.split(' | email=')[0].strip() if ' | email=' in parts else ''
-            email = parts.split(' | email=')[1].split(' | phone=')[0].strip() if ' | email=' in parts and ' | phone=' in parts else ''
-            phone = parts.split(' | phone=')[1].split(' | event_type=')[0].strip() if ' | phone=' in parts and ' | event_type=' in parts else ''
-            event_type = parts.split(' | event_type=')[1].split(' | notes=')[0].strip() if ' | event_type=' in parts else ''
-            notes = parts.split(' | notes=')[1].strip() if ' | notes=' in parts else ''
-            
+        
+            ts_utc = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+            ts_ct = ts_utc.astimezone(CT)
+        
+            # Skip if outside requested range
+            if not (start_ct <= ts_ct <= end_ct):
+                continue
+        
+            # Extract lead info from message text
+            text = first_msg.get('text', '')
+            if 'Name: ' not in text:
+                continue
+        
+            # Parse: Name: X | Event Type: Y | Preferred Date: Z | Notes: ...
+            parts = text.split(' | ')
+            name = ''
+            email = ''
+            phone = ''
+            event_type = ''
+            notes = ''
+        
+            for part in parts:
+                if part.startswith('Name: '):
+                    name = part.split('Name: ')[1].strip()
+                elif part.startswith('Event Type: '):
+                    event_type = part.split('Event Type: ')[1].strip()
+                elif part.startswith('Preferred Date:'):
+                    pass  # skip
+                elif part.startswith('Notes: '):
+                    notes = part.split('Notes: ')[1].strip()
+        
+            # Also check for email/phone in the message
+            email_in_text = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+            if email_in_text:
+                email = email_in_text.group(0)
+        
+            # Also check the 'from' field
+            if not email:
+                from_field = first_msg.get('from', '')
+                email_in_from = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', from_field)
+                if email_in_from:
+                    email = email_in_from.group(0)
+        
+            phone_in_text = re.search(r'\+?1?\d{10,}', text)
+            if phone_in_text:
+                phone = phone_in_text.group(0)
+        
+            # Skip if already seen
             if email.lower() in seen_emails or phone in seen_phones:
-                continue  # already in API results
+                continue
+        
             seen_emails.add(email.lower())
             seen_phones.add(phone)
-            
+        
+            # Determine lead type
             is_bridal = 'bridal' in event_type.lower() and 'non bridal' not in event_type.lower()
             is_non_bridal = 'non bridal' in event_type.lower()
             if is_non_bridal:
@@ -421,13 +464,13 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                 lead_type = 'Bridal'
             else:
                 lead_type = 'Lead'
-            
+        
             leads.append({
                 'name': name,
                 'channel': 'GHL Webform',
                 'phone': phone,
                 'email': email,
-                'timestamp': line_dt.isoformat(),
+                'timestamp': ts_str,
                 'type': lead_type,
                 'status': 'responded',
                 'notes': 'First-touch sent (email + SMS), awaiting reply',
@@ -435,8 +478,8 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                 'inquiry': notes[:300],
                 'prospectReplied': False,
             })
-    except Exception:
-        pass
+        except Exception:
+            continue
     
     return leads
 
