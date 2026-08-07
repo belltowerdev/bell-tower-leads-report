@@ -290,10 +290,22 @@ def get_all_threads():
 
 
 def get_thread_by_id(thread_id):
-    """Find and load a specific thread."""
+    """Find and load a specific thread by ID, phone, or email."""
     threads = get_all_threads()
     for t in threads:
-        if t.get('thread_id') == thread_id or t.get('phone') == thread_id:
+        # Check direct thread_id
+        if t.get('thread_id') == thread_id:
+            return t
+        # Check phone number
+        if t.get('phone') == thread_id:
+            return t
+        # Check email (for platform_gmail threads)
+        email = t.get('lead_data', {}).get('prospect_email', '')
+        if email and email.lower() == thread_id.lower():
+            return t
+        # Check email from filename (mary-email-timestamp.json format)
+        fname = t.get('_file', '')
+        if fname and thread_id.lower() in fname.lower():
             return t
     return None
 
