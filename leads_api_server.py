@@ -494,9 +494,10 @@ def get_platform_leads(env, start_ct, end_ct, name_idx=None):
             if 'Parsed lead platform=' not in line:
                 continue
             try:
-                ts_str = line[:19]
-                today_str = start_ct.strftime("%Y-%m-%d")
-                ts = datetime.strptime(today_str + " " + ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
+                # Extract the actual date from the log line (first 10 chars)
+                line_date = line[:10]  # "2026-08-06"
+                ts_str = line[11:19]  # "21:11:28"
+                ts = datetime.strptime(f"{line_date} {ts_str}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
                 ts_ct = ts
                 if not (start_ct <= ts_ct <= end_ct):
                     continue
