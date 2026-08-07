@@ -97,6 +97,88 @@ def _get_vapi_key():
         return os.environ.get('VAPI_PRIVATE_KEY', '')
 
 
+def _fetch_vapi_transcript(call_id: str) -> str:
+    """Fetch the full verbatim transcript for a single Vapi call.
+
+    The list endpoint only returns a summary; the detail endpoint
+    (GET /call/{id}) returns 'transcript' as a plain string like
+    "AI: ... User: ... AI: ...". Cache per-call in a JSON file to
+    avoid hammering the API on every view.
+    """
+    if not call_id:
+        return ""
+    cache_file = HERMES_ROOT / 'cache' / 'vapi_transcripts.json'
+    cache = {}
+    try:
+        if cache_file.exists():
+            cache = json.loads(cache_file.read_text())
+    except Exception:
+        pass
+
+    if call_id in cache:
+        return cache.get(call_id, "")
+
+    key = _get_vapi_key()
+    if not key:
+        return ""
+
+    try:
+        result = subprocess.run(
+            ['curl', '-sS', '--max-time', '20',
+             '-H', f'Authorization: Bearer {key}',
+             f'https://api.vapi.ai/call/{call_id}'],
+            capture_output=True, text=True, timeout=25
+        )
+        data = json.loads(result.stdout)
+        transcript = data.get('transcript', '') or ''
+        # Keep cache bounded — only store the last 400 calls
+        cache[call_id] = transcript
+        if len(cache) > 400:
+            for k in list(cache.keys())[:len(cache) - 400]:
+                cache.pop(k, None)
+        try:
+            cache_file.write_text(json.dumps(cache))
+        except Exception:
+            pass
+        return transcript
+    except Exception:
+        return ""
+
+
+def _parse_vapi_transcript_string(transcript: str, created_at: str = "") -> list:
+    """Parse a Vapi transcript string into unified messages.
+
+    Format: "AI: Hello User: Hi AI: How can I help?" -> [{role, text}]
+    Falls back to whole-string as a single message if unparseable.
+    """
+    if not transcript:
+        return []
+    # Split on AI:/User: speaker markers
+    parts = re.split(r'\n?(AI|User|Assistant|Customer):\s*', transcript)
+    # parts[0] is preamble (usually empty), then alternating speaker/text
+    messages = []
+    for i in range(1, len(parts) - 1, 2):
+        speaker = parts[i]
+        text = (parts[i + 1] or '').strip()
+        if not text:
+            continue
+        is_agent = speaker in ('AI', 'Assistant')
+        messages.append({
+            'role': 'agent' if is_agent else 'customer',
+            'text': text,
+            'timestamp': created_at,
+            'direction': 'outbound' if is_agent else 'inbound',
+        })
+    if not messages and transcript.strip():
+        messages.append({
+            'role': 'customer',
+            'text': transcript.strip(),
+            'timestamp': created_at,
+            'direction': 'inbound',
+        })
+    return messages
+
+
 def _fetch_vapi_calls():
     """Fetch recent Vapi call transcripts via API, with 5-minute cache."""
     # Check cache
@@ -145,40 +227,51 @@ def _fetch_vapi_calls():
 
 def _format_vapi_call_as_thread(call):
     """Convert a Vapi API call record into the unified thread format.
-    
-    Vapi's list API returns summary but not full transcripts.
-    We use the summary as the display content and also check for
-    SMS threads from the same phone number to show the full picture.
+
+    Uses the FULL verbatim transcript when available (fetched from the
+    detail endpoint), falling back to the summary only when the transcript
+    is unavailable. Also links SMS threads from the same phone number.
     """
     call_id = call.get('id', '')
     transcript_parts = []
 
+    # Fetch the full verbatim transcript (cached)
+    raw_transcript = _fetch_vapi_transcript(call_id)
+    if raw_transcript:
+        transcript_parts = _parse_vapi_transcript_string(
+            raw_transcript, call.get('createdAt', '')
+        )
+        for m in transcript_parts:
+            m['channel'] = 'voice'
+
     # Vapi list API returns transcript/messages as empty strings.
-    # The summary field has the call summary text.
+    # The summary field has the call summary text — only fallback if no transcript.
     summary = call.get('summary', '')
-    
-    if summary:
+    if not transcript_parts and summary:
         # Create a single conversation entry from the summary
         transcript_parts.append({
             'role': 'assistant',
             'text': f'[Call Summary] {summary}',
             'timestamp': call.get('createdAt', ''),
-            'direction': 'outbound'
+            'direction': 'outbound',
+            'channel': 'voice',
         })
     
     # Also check if Vapi returned actual transcript messages (newer API or different endpoint)
-    raw_transcript = call.get('transcript', [])
-    if isinstance(raw_transcript, list):
-        for msg in raw_transcript:
-            role = msg.get('role', 'unknown')
-            text = msg.get('content', msg.get('text', ''))
-            if text:
-                transcript_parts.append({
-                    'role': role,
-                    'text': text,
-                    'timestamp': msg.get('time', call.get('createdAt', '')),
-                    'direction': 'inbound' if role in ('user', 'caller') else 'outbound'
-                })
+    if not transcript_parts:
+        raw_transcript_list = call.get('transcript', [])
+        if isinstance(raw_transcript_list, list):
+            for msg in raw_transcript_list:
+                role = msg.get('role', 'unknown')
+                text = msg.get('content', msg.get('text', ''))
+                if text:
+                    transcript_parts.append({
+                        'role': role,
+                        'text': text,
+                        'timestamp': msg.get('time', call.get('createdAt', '')),
+                        'direction': 'inbound' if role in ('user', 'caller') else 'outbound',
+                        'channel': 'voice',
+                    })
     
     # Extract customer phone
     phone = ''
@@ -217,7 +310,8 @@ def _format_vapi_call_as_thread(call):
                         'text': m.get('body', m.get('text', '')),
                         'timestamp': m.get('timestamp', ''),
                         'direction': m.get('direction', 'outbound'),
-                        'source': m.get('source', 'sms')
+                        'source': m.get('source', 'sms'),
+                        'channel': 'sms',
                     })
             except Exception:
                 pass
@@ -346,18 +440,26 @@ def _channel_for_email_subsource(sub: str) -> str:
 
 
 def _tag_email_messages(formatted: dict) -> None:
-    """Tag existing email/voice messages with their channel."""
+    """Tag existing email/voice messages with their channel.
+
+    Voice threads already carry per-message channel tags (voice for the
+    call transcript, sms for linked follow-ups) — don't clobber them.
+    Only default-tag messages that have no channel yet.
+    """
     src = formatted.get('source', '')
     if src == 'sms':
         for m in formatted['messages']:
-            m['channel'] = 'sms'
+            if not m.get('channel'):
+                m['channel'] = 'sms'
     elif src == 'voice':
         for m in formatted['messages']:
-            m['channel'] = 'voice'
+            if not m.get('channel'):
+                m['channel'] = 'voice'
     else:
         ch = _channel_for_email_subsource(formatted.get('subsource', ''))
         for m in formatted['messages']:
-            m['channel'] = ch
+            if not m.get('channel'):
+                m['channel'] = ch
 
 
 def _format_sms_messages_for_merge(sms_thread: dict) -> list:
@@ -462,8 +564,13 @@ def format_thread_for_display(thread):
         role = msg.get('role', '')
         
         # Voice transcripts use role directly (assistant/user/caller)
+        # NOTE: our parser already emits agent/customer. Preserve both the
+        # parsed agent/customer AND any legacy assistant/user/caller values.
         if thread.get('_source') == 'voice':
-            role = 'agent' if role in ('assistant', 'bot', 'mary') else 'customer'
+            if role in ('assistant', 'bot', 'mary', 'agent'):
+                role = 'agent'
+            else:
+                role = 'customer'
         else:
             role = 'customer' if direction == 'inbound' else 'agent'
         
@@ -476,6 +583,7 @@ def format_thread_for_display(thread):
             'from': msg.get('from', ''),
             'to': msg.get('to', ''),
             'sid': msg.get('sid', ''),
+            'channel': msg.get('channel', ''),
             'has_feedback': check_message_feedback(thread.get('thread_id') or thread.get('phone', ''), idx)
         })
     
