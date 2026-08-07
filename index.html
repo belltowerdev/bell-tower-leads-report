@@ -280,6 +280,109 @@
     font-size: 12px;
     letter-spacing: 0.5px;
   }
+
+  /* ── Thread Viewer Modal ── */
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(20,20,20,0.6);
+    display: none; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal-panel {
+    width: min(920px, 100%); max-height: 92vh;
+    background: #f9f7f3; border-radius: 14px; overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.35);
+  }
+  .modal-header {
+    background: var(--dark); color: #fff; padding: 18px 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  .modal-header .customer-name { font-size: 20px; font-weight: 600; }
+  .modal-header .customer-meta { font-size: 12px; color: #c9c2b4; margin-top: 3px; }
+  .modal-close {
+    background: none; border: 1.5px solid #555; color: #ccc; border-radius: 999px;
+    width: 34px; height: 34px; font-size: 16px; cursor: pointer; flex-shrink: 0;
+  }
+  .modal-close:hover { border-color: #fff; color: #fff; }
+  .chat-container {
+    flex: 1; overflow-y: auto; padding: 22px 26px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .chat-message { max-width: 74%; position: relative; }
+  .chat-message.customer { align-self: flex-start; }
+  .chat-message.agent { align-self: flex-end; }
+  .chat-bubble {
+    padding: 11px 15px; border-radius: 12px; font-size: 14px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .chat-message.customer .chat-bubble { background: #e8e2d9; color: var(--dark); }
+  .chat-message.agent .chat-bubble { background: var(--gold); color: #fff; }
+  .chat-meta {
+    font-size: 11px; color: #999; margin-top: 4px;
+    display: flex; justify-content: space-between; gap: 12px; align-items: center;
+  }
+  .feedback-btn {
+    background: none; border: none; cursor: pointer; font-size: 12px; color: var(--gold);
+    padding: 0;
+  }
+  .feedback-btn:hover { text-decoration: underline; }
+  .feedback-check { color: #2d8659; font-weight: 700; }
+  .call-summary-box {
+    background: #fff8e1; border-left: 3px solid #d4a017; padding: 12px 16px;
+    border-radius: 6px; font-size: 13px; color: #5d4037; margin-bottom: 6px;
+  }
+  .modal-empty {
+    padding: 60px 20px; text-align: center; color: #999; font-size: 15px;
+  }
+  .modal-loading { padding: 60px 20px; text-align: center; color: #999; }
+
+  /* ── Feedback Panel ── */
+  .feedback-panel {
+    border-top: 1px solid #e8e2d9; background: #fff;
+    padding: 16px 26px 20px; display: none;
+  }
+  .feedback-panel.show { display: block; }
+  .feedback-panel h3 { font-size: 14px; font-weight: 600; color: var(--dark); margin-bottom: 12px; }
+  .rating-buttons { display: flex; gap: 8px; margin-bottom: 12px; }
+  .rating-btn {
+    flex: 1; padding: 9px; border: 2px solid #e8e2d9; background: #fff;
+    border-radius: 8px; font-family: inherit; font-size: 13px; cursor: pointer;
+  }
+  .rating-btn.selected { border-color: var(--gold); background: #faf8f4; }
+  .rating-btn.good.selected { border-color: #2d8659; background: #e8f5e9; }
+  .rating-btn.needs_improvement.selected { border-color: #d4a017; background: #fff8e6; }
+  .rating-btn.wrong.selected { border-color: #c0392b; background: #fdeaea; }
+  .feedback-field { margin-bottom: 12px; }
+  .feedback-field label {
+    display: block; font-size: 12px; font-weight: 600; color: var(--dark); margin-bottom: 5px;
+  }
+  .feedback-field textarea {
+    width: 100%; padding: 9px 11px; border: 1px solid #e8e2d9; border-radius: 6px;
+    font-family: inherit; font-size: 13px; resize: vertical;
+  }
+  .failure-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .failure-tag {
+    padding: 4px 10px; background: #f0f0f0; border-radius: 300px;
+    font-size: 11px; cursor: pointer;
+  }
+  .failure-tag.selected { background: #c0392b; color: #fff; }
+  .feedback-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .btn-fb {
+    flex: 1; padding: 10px 16px; border: none; border-radius: 6px;
+    font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .btn-fb-primary { background: var(--gold); color: #fff; }
+  .btn-fb-secondary { background: #e0e0e0; color: var(--dark); }
+  .thread-status-line { font-size: 12px; color: #888; padding: 10px 26px 0; }
+  .thread-status-line .ok { color: #2d8659; }
+  .thread-status-line .miss { color: #c0392b; }
+
+  /* Clickable lead rows */
+  table tbody tr.clickable-row { cursor: pointer; transition: background 0.12s; }
+  table tbody tr.clickable-row:hover { background: #f0ebe3; }
+  table tbody tr.clickable-row:active { background: #e5ddcf; }
 </style>
 </head>
 <body>
@@ -288,8 +391,7 @@
   <img src="https://images.squarespace-cdn.com/content/v1/545507d4e4b00bce94d4f0bc/03339658-856b-4e43-b638-19e537c392c2/Logo.png?format=1500w" alt="The Bell Tower on 34th">
   <div>
     <h1>Leads Report</h1>
-    <div class="subtitle">The Bell Tower on 34th</div>
-    <a href="/conversations" class="header-link">📣 Review Conversations</a>
+    <div class="subtitle">The Bell Tower on 34th — click any lead to review the conversation</div>
   </div>
 </div>
 
@@ -320,6 +422,55 @@
   <div class="loading">
     <div class="spinner"></div>
     <p>Select a date range and click Run Report</p>
+  </div>
+</div>
+
+<!-- Thread Viewer Modal -->
+<div class="modal-overlay" id="threadModal">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <div>
+        <div class="customer-name" id="modalName">—</div>
+        <div class="customer-meta" id="modalMeta">—</div>
+      </div>
+      <button class="modal-close" onclick="closeThreadModal()">✕</button>
+    </div>
+    <div class="thread-status-line" id="modalStatus"></div>
+    <div class="chat-container" id="modalChat">
+      <div class="modal-loading">Loading conversation...</div>
+    </div>
+    <div class="feedback-panel" id="feedbackPanel">
+      <h3>📝 Rate This Response</h3>
+      <div class="rating-buttons">
+        <button class="rating-btn good" onclick="setRating('good')">👍 Good</button>
+        <button class="rating-btn needs_improvement" onclick="setRating('needs_improvement')">✋ Fix</button>
+        <button class="rating-btn wrong" onclick="setRating('wrong')">👎 Wrong</button>
+      </div>
+      <div class="feedback-field">
+        <label>Corrected Response (optional)</label>
+        <textarea id="correctedResponse" rows="3" placeholder="How should Mary have responded?"></textarea>
+      </div>
+      <div class="feedback-field">
+        <label>Coaching Note</label>
+        <textarea id="coachingNote" rows="2" placeholder="Why is this correction better?"></textarea>
+      </div>
+      <div class="feedback-field">
+        <label>Failure Tags</label>
+        <div class="failure-tags" id="failureTags">
+          <span class="failure-tag" onclick="toggleTag(this)" data-tag="missed_tour_ask">Missed tour ask</span>
+          <span class="failure-tag" onclick="toggleTag(this)" data-tag="wrong_tone">Wrong tone</span>
+          <span class="failure-tag" onclick="toggleTag(this)" data-tag="incorrect_info">Incorrect info</span>
+          <span class="failure-tag" onclick="toggleTag(this)" data-tag="missed_objection">Missed objection</span>
+          <span class="failure-tag" onclick="toggleTag(this)" data-tag="premature_pricing">Premature pricing</span>
+          <span class="failure-tag" onclick="toggleTag(this)" data-tag="too_pushy">Too pushy</span>
+          <span class="failure-tag" onclick="toggleTag(this)" data-tag="too_passive">Too passive</span>
+        </div>
+      </div>
+      <div class="feedback-actions">
+        <button class="btn-fb btn-fb-secondary" onclick="cancelFeedback()">Cancel</button>
+        <button class="btn-fb btn-fb-primary" onclick="submitFeedback()">Submit Feedback</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -445,6 +596,7 @@ async function fetchLeads() {
 function renderReport(data) {
   const { leads, nonLeadCalls, summary } = data;
   const content = document.getElementById('content');
+  window.__leadRows = [];  // lead identity map for row clicks
 
   // Update summary bar
   document.getElementById('summaryBar').style.display = 'flex';
@@ -469,22 +621,22 @@ function renderReport(data) {
 
   if (ghl.length > 0) {
     html += '<div class="section-title">GHL Webform (' + ghl.length + ')</div>';
-    html += renderTable(ghl, ['name', 'phone', 'time', 'speed', 'conv', 'type', 'inquiry', 'notes']);
+    html += renderTable(ghl, ['name', 'phone', 'time', 'speed', 'conv', 'type', 'inquiry', 'notes'], true);
   }
 
   if (platform.length > 0) {
     html += '<div class="section-title">Platform Leads (' + platform.length + ')</div>';
-    html += renderTable(platform, ['name', 'time', 'eventDetails', 'speed', 'inquiry', 'notes']);
+    html += renderTable(platform, ['name', 'time', 'eventDetails', 'speed', 'inquiry', 'notes'], true);
   }
 
   if (phone.length > 0) {
     html += '<div class="section-title">Phone Leads (' + phone.length + ')</div>';
-    html += renderTable(phone, ['name', 'phone', 'time', 'smsSent', 'notes']);
+    html += renderTable(phone, ['name', 'phone', 'time', 'smsSent', 'notes'], true);
   }
 
   if (nonLeadCalls.length > 0) {
     html += '<div class="section-title">Non-Lead Calls (' + nonLeadCalls.length + ')</div>';
-    html += renderTable(nonLeadCalls, ['name', 'category', 'phone', 'time', 'smsSent', 'notes']);
+    html += renderTable(nonLeadCalls, ['name', 'category', 'phone', 'time', 'smsSent', 'notes'], true);
   }
 
   // Slot Open Reminders section
@@ -504,7 +656,7 @@ function renderReport(data) {
   content.innerHTML = html;
 }
 
-function renderTable(rows, columns) {
+function renderTable(rows, columns, clickable) {
   const headers = {
     name: 'Name', channel: 'Channel', phone: 'Phone', time: 'Time (CT) · Date',
     type: 'Type', notes: 'Notes', eventDetails: 'Event Details',
@@ -518,7 +670,18 @@ function renderTable(rows, columns) {
   html += '</tr></thead><tbody>';
 
     rows.forEach((row, i) => {
-    html += '<tr>';
+    let rowIdx = -1;
+    if (clickable) {
+      rowIdx = window.__leadRows.length;
+      window.__leadRows.push({
+        name: row.name || '',
+        phone: row.phone || '',
+        email: row.email || '',
+        timestamp: row.timestamp || '',
+        channel: row.channel || ''
+      });
+    }
+    html += `<tr${clickable ? ` class="clickable-row" onclick="openLeadThread(${rowIdx}, event)"` : ''}>`;
     columns.forEach(col => {
       let val = '';
       if (col === 'name' && row.recordingUrl) {
@@ -572,7 +735,7 @@ function renderTable(rows, columns) {
       else if (col === 'prospect') {
         // Prospect / Phone combined: name if present, else formatted phone
         const p = row.prospect || row.name || row.phone || '';
-        if (p && /^\+\d/.test(p)) val = `<span class="phone">${fmtPhone(p)}</span>`;
+        if (p && /^\+?\d/.test(p)) val = `<span class="phone">${fmtPhone(p)}</span>`;
         else val = `<span class="phone">${p || '—'}</span>`;
       }
       else if (col === 'status') {
@@ -628,6 +791,193 @@ function playRecording(url, btn) {
     currentAudio = null;
     alert('Could not load recording. The VAPI presigned URL may have expired.');
   };
+}
+
+// ── Inline Thread Viewer + Feedback ─────────────────────────────
+let currentThread = null;
+let currentMessageIdx = null;
+let currentRating = null;
+let selectedTags = [];
+
+function openLeadThread(rowIdx, evt) {
+  // Don't open when clicking a link or button inside the row (recording play etc.)
+  if (evt && evt.target.closest && evt.target.closest('a, button')) return;
+
+  const lead = (window.__leadRows || [])[rowIdx];
+  if (!lead) return;
+
+  document.getElementById('threadModal').classList.add('show');
+  document.getElementById('modalName').textContent = lead.name || lead.phone || 'Unknown';
+  const ch = lead.channel || '';
+  document.getElementById('modalMeta').textContent =
+    (ch ? ch + ' · ' : '') + (lead.phone ? fmtPhone(lead.phone) + ' · ' : '') + (lead.email || '');
+  document.getElementById('modalChat').innerHTML = '<div class="modal-loading">Loading conversation...</div>';
+  document.getElementById('modalStatus').innerHTML = '';
+  document.getElementById('feedbackPanel').classList.remove('show');
+  currentThread = null;
+
+  const qs = new URLSearchParams();
+  if (lead.email) qs.set('email', lead.email);
+  if (lead.phone) qs.set('phone', lead.phone);
+  if (lead.name) qs.set('name', lead.name);
+  if (lead.timestamp) qs.set('timestamp', lead.timestamp);
+
+  fetch(`/api/threads/find?${qs.toString()}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.found && data.thread) {
+        currentThread = data.thread;
+        document.getElementById('modalStatus').innerHTML =
+          `<span class="ok">✓ Conversation found</span>`;
+        renderThreadViewer(data.thread);
+      } else {
+        currentThread = null;
+        document.getElementById('modalStatus').innerHTML =
+          `<span class="miss">No stored conversation for this lead</span>`;
+        document.getElementById('modalChat').innerHTML =
+          '<div class="modal-empty">No conversation thread found for this lead yet.<br><br>If this is a recent lead, the thread may not have been captured.</div>';
+      }
+    })
+    .catch(err => {
+      document.getElementById('modalStatus').innerHTML = `<span class="miss">Error loading conversation</span>`;
+      document.getElementById('modalChat').innerHTML =
+        '<div class="modal-empty">Error loading conversation: ' + escapeHtml(err.message) + '</div>';
+    });
+}
+
+function closeThreadModal() {
+  document.getElementById('threadModal').classList.remove('show');
+  currentThread = null;
+  currentMessageIdx = null;
+  document.getElementById('feedbackPanel').classList.remove('show');
+}
+
+function renderThreadViewer(thread) {
+  const chat = document.getElementById('modalChat');
+  let html = '';
+
+  if (thread.call_summary) {
+    html += `<div class="call-summary-box"><strong>📞 Call Summary:</strong> ${escapeHtml(thread.call_summary)}</div>`;
+  }
+
+  const msgs = thread.messages || [];
+  if (msgs.length === 0) {
+    html = '<div class="modal-empty">No messages in this thread.</div>';
+  }
+
+  msgs.forEach((msg, idx) => {
+    const isAgent = msg.role === 'agent';
+    const speaker = isAgent ? 'Mary' : 'Customer';
+    const timeStr = formatTime(msg.timestamp);
+    const fbMark = msg.has_feedback ? ' <span class="feedback-check">✓</span>' : '';
+    html += `
+      <div class="chat-message ${isAgent ? 'agent' : 'customer'}">
+        <div class="chat-bubble">${escapeHtml(msg.text || '')}</div>
+        <div class="chat-meta">
+          <span>${speaker}${fbMark}</span>
+          <span>${timeStr}</span>
+          ${isAgent ? `<button class="feedback-btn" onclick="openFeedback(${idx})">📝 Feedback</button>` : ''}
+        </div>
+      </div>`;
+  });
+
+  chat.innerHTML = html;
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function openFeedback(messageIdx) {
+  currentMessageIdx = messageIdx;
+  currentRating = null;
+  selectedTags = [];
+
+  document.querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
+  document.querySelectorAll('.failure-tag').forEach(t => t.classList.remove('selected'));
+  document.getElementById('correctedResponse').value = '';
+  document.getElementById('coachingNote').value = '';
+
+  document.getElementById('feedbackPanel').classList.add('show');
+  document.getElementById('feedbackPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function setRating(rating) {
+  currentRating = rating;
+  document.querySelectorAll('.rating-btn').forEach(b => b.classList.remove('selected'));
+  document.querySelector(`.rating-btn.${rating}`).classList.add('selected');
+}
+
+function toggleTag(el) {
+  const tag = el.dataset.tag;
+  el.classList.toggle('selected');
+  if (el.classList.contains('selected')) selectedTags.push(tag);
+  else selectedTags = selectedTags.filter(t => t !== tag);
+}
+
+function cancelFeedback() {
+  document.getElementById('feedbackPanel').classList.remove('show');
+  currentMessageIdx = null;
+}
+
+async function submitFeedback() {
+  if (!currentRating) { alert('Please select a rating'); return; }
+  if (!currentThread || currentMessageIdx === null) { alert('Select a message first'); return; }
+
+  const msg = currentThread.messages[currentMessageIdx];
+  const payload = {
+    thread_id: currentThread.thread_id,
+    message_idx: currentMessageIdx,
+    reviewer: 'Roger Igo',
+    original_role: msg.role,
+    original_text: msg.text,
+    agent: 'Mary',
+    rating: currentRating,
+    corrected_response: document.getElementById('correctedResponse').value,
+    coaching_note: document.getElementById('coachingNote').value,
+    failure_tags: selectedTags,
+    context: {
+      customer_name: currentThread.customer_name || '',
+      event_type: currentThread.event_type || '',
+      channel: currentThread.source || '',
+      subsource: currentThread.subsource || '',
+      customer_phone: currentThread.customer_phone || ''
+    }
+  };
+
+  try {
+    const res = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.feedback_id) {
+      currentThread.messages[currentMessageIdx].has_feedback = true;
+      renderThreadViewer(currentThread);
+      cancelFeedback();
+    } else {
+      alert('Error: ' + (data.error || 'unknown'));
+    }
+  } catch (err) {
+    alert('Error submitting feedback: ' + err.message);
+  }
+}
+
+// Helpers
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
+
+function formatTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return '';
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    timeZone: 'America/Chicago'
+  });
 }
 </script>
 </body>

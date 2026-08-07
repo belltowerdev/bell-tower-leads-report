@@ -571,6 +571,9 @@ class FeedbackHandler(BaseHTTPRequestHandler):
         try:
             if path == '/api/threads':
                 self.handle_list_threads(params)
+            elif path == '/api/threads/find':
+                # MUST be before generic /:id — find is a lookup by lead identity
+                self.handle_find_thread(params)
             elif path.startswith('/api/threads/') and path != '/api/threads/':
                 thread_id = path.split('/api/threads/')[1]
                 self.handle_get_thread(thread_id)
@@ -690,6 +693,113 @@ class FeedbackHandler(BaseHTTPRequestHandler):
         
         formatted = format_thread_for_display(thread)
         self.send_json_response(formatted)
+
+    def handle_find_thread(self, params):
+        """Find the best-matching thread for a lead row.
+        
+        Accepts any of: email, phone, name, channel, timestamp.
+        Scores every thread on identity overlap and returns the best match
+        so the leads report can open the conversation inline.
+        """
+        email = (params.get('email') or [''])[0].strip().lower()
+        phone = (params.get('phone') or [''])[0].strip()
+        name = (params.get('name') or [''])[0].strip()
+        timestamp = (params.get('timestamp') or [''])[0].strip()
+
+        def norm_phone(p):
+            return re.sub(r'\D', '', p or '')[-10:] if p else ''
+
+        target_phone = norm_phone(phone)
+
+        def norm_name(n):
+            return re.sub(r'[^a-z0-9 ]', '', (n or '').lower()).strip()
+
+        target_name = norm_name(name)
+
+        best = None
+        best_score = 0
+
+        for t in get_all_threads():
+            score = 0
+            f = format_thread_for_display(t)
+
+            # --- email match ---
+            thread_emails = set()
+            ld = t.get('lead_data') or {}
+            for k in ('prospect_email', 'email'):
+                if ld.get(k):
+                    thread_emails.add(str(ld[k]).strip().lower())
+            if t.get('_email_subsource') and f.get('customer_email'):
+                thread_emails.add(f['customer_email'].strip().lower())
+            for m in t.get('messages', [])[:3]:
+                for fld in ('from', 'to'):
+                    v = m.get(fld) or ''
+                    if '@' in v:
+                        thread_emails.add(v.strip().lower())
+
+            if email and email in thread_emails:
+                score += 60
+
+            # --- phone match ---
+            thread_phones = set()
+            if f.get('customer_phone'):
+                thread_phones.add(norm_phone(f['customer_phone']))
+            if ld.get('prospect_phone'):
+                thread_phones.add(norm_phone(ld['prospect_phone']))
+            for m in t.get('messages', [])[:5]:
+                for fld in ('from', 'to'):
+                    v = norm_phone(m.get(fld) or '')
+                    if len(v) >= 10:
+                        thread_phones.add(v)
+
+            if target_phone and len(target_phone) >= 10 and target_phone in thread_phones:
+                score += 50
+
+            # --- name match ---
+            thread_names = set()
+            for nk in ('first_name', 'prospect_name'):
+                if ld.get(nk):
+                    thread_names.add(norm_name(ld[nk]))
+            if f.get('customer_name'):
+                thread_names.add(norm_name(f['customer_name']))
+            if t.get('thread_id'):
+                # thread filenames often embed the name (WWIRE-...-Cathy-Cardenas)
+                thread_names.add(norm_name(t['thread_id'].replace('-', ' ')))
+
+            if target_name and len(target_name) >= 3:
+                if target_name in thread_names:
+                    score += 30
+                else:
+                    # partial: any name token overlap (first name)
+                    tgt_tokens = set(target_name.split())
+                    for tn in thread_names:
+                        if tgt_tokens & set(tn.split()):
+                            score += 15
+                            break
+
+            # --- timestamp proximity (disambiguates same-name/phone cases) ---
+            if timestamp:
+                try:
+                    lead_ts = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    thread_ts_raw = f.get('created_at') or ''
+                    if thread_ts_raw:
+                        thread_ts = datetime.fromisoformat(thread_ts_raw.replace('Z', '+00:00'))
+                        delta_days = abs((lead_ts - thread_ts).total_seconds()) / 86400
+                        if delta_days <= 2:
+                            score += 20
+                        elif delta_days <= 7:
+                            score += 8
+                except Exception:
+                    pass
+
+            if score > best_score:
+                best_score = score
+                best = f
+
+        if best and best_score >= 30:
+            self.send_json_response({'found': True, 'score': best_score, 'thread': best})
+        else:
+            self.send_json_response({'found': False, 'score': best_score, 'thread': None})
     
     def handle_create_feedback(self, data):
         """Create new feedback entry."""
