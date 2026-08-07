@@ -838,8 +838,9 @@ function openLeadThread(rowIdx, evt) {
     .then(data => {
       if (data.found && data.thread) {
         currentThread = data.thread;
+        const merged = data.thread.merged_channels ? ' · email + SMS' : '';
         document.getElementById('modalStatus').innerHTML =
-          `<span class="ok">✓ Conversation found</span>`;
+          `<span class="ok">✓ Conversation found${merged}</span>`;
         // Header meta: channel + phone + email
         const t = data.thread;
         const chLabel = threadChannelName(t);
@@ -920,6 +921,17 @@ function threadChannelName(thread) {
 // Resolve which channel Mary sent a message from. Returns {text, cls} or null.
 function messageChannelLabel(msg, thread) {
   if (msg.role !== 'agent') return null;
+
+  // Server-tagged channel (cross-channel merged view) — highest authority
+  if (msg.channel) {
+    const ch = String(msg.channel).toLowerCase();
+    if (ch === 'agentmail') return { text: '✉️ AgentMail (mary@venue.belltoweron34th.com)', cls: 'ch-agentmail' };
+    if (ch === 'planning') return { text: '✉️ Planning@ (planning@belltoweron34th.com)', cls: 'ch-planning' };
+    if (ch === 'sms') return { text: '📱 Twilio SMS', cls: 'ch-sms' };
+    if (ch === 'voice') return { text: '📞 Voice (Mary on call)', cls: 'ch-voice' };
+    return { text: '✉️ Email', cls: 'ch-direct' };
+  }
+
   const from = String(msg.from || '').toLowerCase();
   const to = String(msg.to || '').toLowerCase();
   const src = String(thread.source || '').toLowerCase();

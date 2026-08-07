@@ -40,6 +40,7 @@ THREADS_DIR = HERMES_ROOT / 'agents' / 'mary' / 'threads'
 SMS_THREADS_DIR = HERMES_ROOT / 'sms-threads'
 FEEDBACK_DIR = HERMES_ROOT / 'feedback'
 TRAINING_DIR = HERMES_ROOT / 'training'
+EMAIL_INDEX_PATH = HERMES_ROOT / 'agents' / 'shared-contacts' / '_email_index.json'
 
 # Vapi config
 MARY_ASSISTANT_ID = "ab64ee08-aef6-42e0-a585-01354352232c"
@@ -287,6 +288,148 @@ def get_all_threads():
         pass
 
     return threads
+
+
+# ── Cross-channel merge: link SMS threads into email/voice views ──────────────
+# A GHL/platform prospect is hit on BOTH email and SMS. When Roger opens a lead
+# in the leads report, he must see ALL two-way communication regardless of the
+# channel it happened on. These helpers find the linked SMS thread (via the PCR
+# email index: email -> phone) and merge its messages into the thread view,
+# tagging each message with its channel.
+
+def _load_email_phone_index() -> dict:
+    """Load the PCR email index (email -> phone). Never raises."""
+    try:
+        if EMAIL_INDEX_PATH.exists():
+            return json.loads(EMAIL_INDEX_PATH.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _email_to_phone(email: str) -> str:
+    """Reverse-lookup a phone for an email via the PCR index."""
+    norm = (email or '').strip().lower()
+    if not norm:
+        return ''
+    idx = _load_email_phone_index()
+    ph = idx.get(norm, '')
+    if ph.startswith('email-'):
+        return ''  # email-keyed record, no phone
+    return ph or ''
+
+
+def _load_sms_thread_by_phone(phone: str):
+    """Load the SMS thread file for a phone, if any."""
+    if not phone:
+        return None
+    digits = re.sub(r'\D', '', str(phone))
+    if len(digits) < 10:
+        return None
+    cand = f'+1{digits[-10:]}'
+    p = SMS_THREADS_DIR / f'{cand}.json'
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return None
+    return None
+
+
+def _channel_for_email_subsource(sub: str) -> str:
+    """Map an email subsource to a channel tag."""
+    if sub == 'ghl':
+        return 'agentmail'
+    if sub.startswith('platform'):
+        return 'planning'
+    return 'email'
+
+
+def _tag_email_messages(formatted: dict) -> None:
+    """Tag existing email/voice messages with their channel."""
+    src = formatted.get('source', '')
+    if src == 'sms':
+        for m in formatted['messages']:
+            m['channel'] = 'sms'
+    elif src == 'voice':
+        for m in formatted['messages']:
+            m['channel'] = 'voice'
+    else:
+        ch = _channel_for_email_subsource(formatted.get('subsource', ''))
+        for m in formatted['messages']:
+            m['channel'] = ch
+
+
+def _format_sms_messages_for_merge(sms_thread: dict) -> list:
+    """Convert an SMS thread's messages to the unified message shape, tagged sms."""
+    msgs = []
+    phone = sms_thread.get('phone', '')
+    for idx, m in enumerate(sms_thread.get('messages', [])):
+        direction = m.get('direction', 'inbound')
+        role = 'customer' if direction == 'inbound' else 'agent'
+        msgs.append({
+            'idx': idx,
+            'role': role,
+            'direction': direction,
+            'text': m.get('body') or m.get('text') or '',
+            'timestamp': m.get('timestamp', ''),
+            'from': '',
+            'to': '',
+            'sid': m.get('sid', ''),
+            'has_feedback': check_message_feedback(phone, idx),
+            'channel': 'sms',
+        })
+    return msgs
+
+
+def _merge_sms_into_thread(formatted: dict) -> dict:
+    """Merge the linked SMS thread into an email thread view (sorted by time)."""
+    if formatted.get('source') == 'sms':
+        _tag_email_messages(formatted)
+        return formatted
+
+    _tag_email_messages(formatted)
+
+    # Only merge into email threads (voice already merges its own SMS follow-ups)
+    if formatted.get('source') != 'email':
+        return formatted
+
+    # Find the phone: direct, else via email index
+    phone = formatted.get('customer_phone') or ''
+    if not phone:
+        # Extract email from customer_email OR message from/to fields
+        email = formatted.get('customer_email') or ''
+        if not email:
+            for m in formatted.get('messages', [])[:5]:
+                for fld in ('from', 'to'):
+                    v = str(m.get(fld, '') or '').strip().lower()
+                    if '@' in v and 'belltoweron34th' not in v and 'venue.bell' not in v:
+                        email = v
+                        break
+                if email:
+                    break
+        phone = _email_to_phone(email)
+
+    sms_thread = _load_sms_thread_by_phone(phone)
+    if not sms_thread:
+        return formatted
+
+    sms_msgs = _format_sms_messages_for_merge(sms_thread)
+    if not sms_msgs:
+        return formatted
+
+    combined = formatted['messages'] + sms_msgs
+
+    def _ts(m):
+        try:
+            return datetime.fromisoformat((m.get('timestamp') or '').replace('Z', '+00:00'))
+        except Exception:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    combined.sort(key=_ts)
+    formatted['messages'] = combined
+    formatted['merged_channels'] = True
+    return formatted
 
 
 def get_thread_by_id(thread_id):
@@ -684,7 +827,7 @@ class FeedbackHandler(BaseHTTPRequestHandler):
         self.send_json_response({'threads': result, 'count': len(result)})
     
     def handle_get_thread(self, thread_id):
-        """Get a specific thread with full details."""
+        """Get a specific thread with full details (cross-channel merged)."""
         thread = get_thread_by_id(thread_id)
         
         if not thread:
@@ -692,6 +835,7 @@ class FeedbackHandler(BaseHTTPRequestHandler):
             return
         
         formatted = format_thread_for_display(thread)
+        formatted = _merge_sms_into_thread(formatted)
         self.send_json_response(formatted)
 
     def handle_find_thread(self, params):
@@ -797,6 +941,7 @@ class FeedbackHandler(BaseHTTPRequestHandler):
                 best = f
 
         if best and best_score >= 30:
+            best = _merge_sms_into_thread(best)
             self.send_json_response({'found': True, 'score': best_score, 'thread': best})
         else:
             self.send_json_response({'found': False, 'score': best_score, 'thread': None})
