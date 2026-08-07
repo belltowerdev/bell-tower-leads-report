@@ -383,6 +383,18 @@
   table tbody tr.clickable-row { cursor: pointer; transition: background 0.12s; }
   table tbody tr.clickable-row:hover { background: #f0ebe3; }
   table tbody tr.clickable-row:active { background: #e5ddcf; }
+
+  /* Channel tag — shows which service Mary sent from on every agent message */
+  .channel-tag {
+    display: inline-block; padding: 3px 10px; border-radius: 300px;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
+    margin-bottom: 5px;
+  }
+  .ch-agentmail { background: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb; }
+  .ch-planning { background: #f3e5f5; color: #6a1b9a; border: 1px solid #e1bee7; }
+  .ch-sms { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+  .ch-voice { background: #fff3e0; color: #e65100; border: 1px solid #ffe0b2; }
+  .ch-direct { background: #f5f5f5; color: #424242; border: 1px solid #e0e0e0; }
 </style>
 </head>
 <body>
@@ -808,9 +820,8 @@ function openLeadThread(rowIdx, evt) {
 
   document.getElementById('threadModal').classList.add('show');
   document.getElementById('modalName').textContent = lead.name || lead.phone || 'Unknown';
-  const ch = lead.channel || '';
-  document.getElementById('modalMeta').textContent =
-    (ch ? ch + ' · ' : '') + (lead.phone ? fmtPhone(lead.phone) + ' · ' : '') + (lead.email || '');
+  // Channel resolved after fetch — set placeholder here, refine in then()
+  document.getElementById('modalMeta').textContent = 'Loading channel…';
   document.getElementById('modalChat').innerHTML = '<div class="modal-loading">Loading conversation...</div>';
   document.getElementById('modalStatus').innerHTML = '';
   document.getElementById('feedbackPanel').classList.remove('show');
@@ -829,6 +840,13 @@ function openLeadThread(rowIdx, evt) {
         currentThread = data.thread;
         document.getElementById('modalStatus').innerHTML =
           `<span class="ok">✓ Conversation found</span>`;
+        // Header meta: channel + phone + email
+        const t = data.thread;
+        const chLabel = threadChannelName(t);
+        document.getElementById('modalMeta').textContent =
+          (chLabel ? chLabel + ' · ' : '') +
+          (t.customer_phone ? fmtPhone(t.customer_phone) + ' · ' : '') +
+          (t.customer_email || '');
         renderThreadViewer(data.thread);
       } else {
         currentThread = null;
@@ -870,8 +888,10 @@ function renderThreadViewer(thread) {
     const speaker = isAgent ? 'Mary' : 'Customer';
     const timeStr = formatTime(msg.timestamp);
     const fbMark = msg.has_feedback ? ' <span class="feedback-check">✓</span>' : '';
+    const channelLabel = messageChannelLabel(msg, thread);
     html += `
       <div class="chat-message ${isAgent ? 'agent' : 'customer'}">
+        ${isAgent && channelLabel ? `<div class="channel-tag ${channelLabel.cls}">${channelLabel.text}</div>` : ''}
         <div class="chat-bubble">${escapeHtml(msg.text || '')}</div>
         <div class="chat-meta">
           <span>${speaker}${fbMark}</span>
@@ -883,6 +903,65 @@ function renderThreadViewer(thread) {
 
   chat.innerHTML = html;
   chat.scrollTop = chat.scrollHeight;
+}
+
+// Friendly channel name for a whole thread (used in modal header)
+function threadChannelName(thread) {
+  const src = String(thread.source || '').toLowerCase();
+  const sub = String(thread.subsource || '').toLowerCase();
+  if (src === 'sms' || sub === 'inbound_sms' || sub === 'post_call_sms') return 'Twilio SMS';
+  if (src === 'voice' || sub === 'vapi_call') return 'Voice';
+  if (sub === 'ghl') return 'AgentMail';
+  if (sub.startsWith('platform')) return 'Planning@';
+  if (src === 'email') return 'Email';
+  return src || '';
+}
+
+// Resolve which channel Mary sent a message from. Returns {text, cls} or null.
+function messageChannelLabel(msg, thread) {
+  if (msg.role !== 'agent') return null;
+  const from = String(msg.from || '').toLowerCase();
+  const to = String(msg.to || '').toLowerCase();
+  const src = String(thread.source || '').toLowerCase();
+  const sub = String(thread.subsource || '').toLowerCase();
+
+  // SMS (Twilio) — thread source is sms, or message came from the sms synthetic domain
+  if (src === 'sms' || from.includes('sms.belltoweron34th.com') || to.includes('sms.belltoweron34th.com')) {
+    return { text: '📱 Twilio SMS', cls: 'ch-sms' };
+  }
+
+  // Voice-call linked SMS follow-ups
+  if (msg.source === 'post_call_sms' || sub === 'post_call_sms') {
+    return { text: '📱 Twilio SMS (post-call)', cls: 'ch-sms' };
+  }
+
+  // Platform emails go out from planning@belltoweron34th.com (Gmail)
+  if (from.includes('planning@belltoweron34th.com')) {
+    return { text: '✉️ Planning@ (planning@belltoweron34th.com)', cls: 'ch-planning' };
+  }
+
+  // GHL webform replies go out from mary@venue.belltoweron34th.com (AgentMail)
+  if (from.includes('mary@venue.belltoweron34th.com') || sub === 'ghl') {
+    return { text: '✉️ AgentMail (mary@venue.belltoweron34th.com)', cls: 'ch-agentmail' };
+  }
+
+  // Voice — Mary speaks on the phone; if there's no email/sms signature it's a call
+  if (src === 'voice' || sub === 'vapi_call') {
+    return { text: '📞 Voice (Mary on call)', cls: 'ch-voice' };
+  }
+
+  // Platform-flagged threads with planning@ in any field
+  if (sub.startsWith('platform')) {
+    return { text: '✉️ Planning@ (planning@belltoweron34th.com)', cls: 'ch-planning' };
+  }
+
+  // Direct emails from other addresses — show the actual from address
+  if (from && from.includes('@')) {
+    return { text: `✉️ ${msg.from}`, cls: 'ch-direct' };
+  }
+
+  // Fallback
+  return { text: '✉️ Email', cls: 'ch-direct' };
 }
 
 function openFeedback(messageIdx) {
