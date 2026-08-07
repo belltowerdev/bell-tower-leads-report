@@ -1,0 +1,13 @@
+{
+  "rewrites": [
+    { "source": "/api/leads", "destination": "/api/leads" },
+    { "source": "/api/recording/(.*)", "destination": "/api/recording/:path" },
+    { "source": "/api/threads", "destination": "http://localhost:3980/api/threads" },
+    { "source": "/api/threads/(.*)", "destination": "http://localhost:3980/api/threads/:path" },
+    { "source": "/api/feedback", "destination": "http://localhost:3980/api/feedback" },
+    { "source": "/api/feedback/(.*)", "destination": "http://localhost:3980/api/feedback/:path" },
+    { "source": "/api/training/(.*)", "destination": "http://localhost:3980/api/training/:path" },
+    { "source": "/conversations", "destination": "/conversations.html" },
+    { "source": "/training", "destination": "/training.html" }
+  ]
+}

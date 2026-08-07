@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Leads Report — The Bell Tower on 34th</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --gold: #B39761;
+    --gold-light: #C9B280;
+    --dark: #171717;
+    --body: #363636;
+    --white: #ffffff;
+    --bg: #f9f7f3;
+    --card-bg: #ffffff;
+    --border: #e8e2d9;
+    --green: #2d8659;
+    --red: #c0392b;
+    --amber: #d4a017;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Source Sans Pro', sans-serif;
+    background: var(--bg);
+    color: var(--body);
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  /* Header */
+  .header {
+    background: var(--dark);
+    padding: 28px 40px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    border-bottom: 3px solid var(--gold);
+  }
+  .header img {
+    height: 52px;
+    filter: brightness(1.3) saturate(0) contrast(1.1);
+  }
+  .header h1 {
+    color: var(--white);
+    font-weight: 400;
+    font-size: 28px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+  .header .subtitle {
+    color: var(--gold-light);
+    font-size: 14px;
+    letter-spacing: 1px;
+    margin-top: 2px;
+  }
+  .header .header-link {
+    display: block;
+    color: var(--gold);
+    font-size: 13px;
+    text-decoration: none;
+    margin-top: 6px;
+    letter-spacing: 0.5px;
+  }
+  .header .header-link:hover {
+    color: var(--white);
+  }
+  /* Controls */
+  .controls {
+    background: var(--card-bg);
+    padding: 24px 40px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .controls label {
+    font-weight: 600;
+    color: var(--dark);
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .controls input[type="date"] {
+    font-family: 'Source Sans Pro', sans-serif;
+    font-size: 16px;
+    padding: 10px 16px;
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    color: var(--dark);
+    background: var(--white);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .controls input[type="date"]:focus {
+    border-color: var(--gold);
+  }
+  .btn {
+    background: var(--gold);
+    color: var(--white);
+    border: none;
+    padding: 12px 28px;
+    border-radius: 300px;
+    font-family: 'Source Sans Pro', sans-serif;
+    font-size: 15px;
+    letter-spacing: 1px;
+    text-transform: capitalize;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .btn:hover { background: var(--gold-light); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .quick-btns { display: flex; gap: 8px; }
+  .quick-btn {
+    background: transparent;
+    color: var(--gold);
+    border: 1.5px solid var(--gold);
+    padding: 8px 16px;
+    border-radius: 300px;
+    font-family: 'Source Sans Pro', sans-serif;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .quick-btn:hover { background: var(--gold); color: var(--white); }
+  .quick-btn.active { background: var(--gold); color: var(--white); }
+  /* Summary bar */
+  .summary-bar {
+    display: flex;
+    gap: 0;
+    padding: 0 40px;
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .summary-card {
+    flex: 1;
+    padding: 20px 24px;
+    text-align: center;
+    border-right: 1px solid var(--border);
+  }
+  .summary-card:last-child { border-right: none; }
+  .summary-card .num {
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--dark);
+  }
+  .summary-card .label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--body);
+    margin-top: 4px;
+  }
+  .summary-card.gold .num { color: var(--gold); }
+  .summary-card.green .num { color: var(--green); }
+  /* Content */
+  .content {
+    padding: 32px 40px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  .section-title {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--gold);
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--gold);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 32px;
+    background: var(--card-bg);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  thead th {
+    background: var(--dark);
+    color: var(--white);
+    padding: 12px 14px;
+    text-align: left;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    vertical-align: top;
+  }
+  tbody tr:hover { background: #faf8f4; }
+  tbody tr:last-child td { border-bottom: none; }
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 300px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .badge-bridal { background: #fdf0e6; color: #b56b2a; }
+  .badge-nonbridal { background: #e6f0fa; color: #2a6db5; }
+  .badge-ghl { background: #e8f5e9; color: #2d8659; }
+  .badge-platform { background: #f3e8fd; color: #7b2fb5; }
+  .badge-vapi { background: #fff3e0; color: #c4550a; }
+  .badge-active { background: #e8f5e9; color: var(--green); }
+  .conv-wrap { white-space: normal; max-width: 180px; line-height: 1.3; display: inline-block; }
+  .badge-awaiting { background: #f5f5f5; color: #888; }
+  .badge-spam { background: #fde8e8; color: var(--red); }
+  .badge-responded { background: #e8f5e9; color: var(--green); }
+  .badge-missed { background: #fde8e8; color: var(--red); }
+  .speed-fast { color: var(--green); font-weight: 700; font-size: 14px; white-space: nowrap; }
+  .speed-slow { color: var(--red); font-weight: 700; font-size: 14px; white-space: nowrap; }
+  .speed-na { color: #ccc; font-size: 14px; }
+  .inquiry { font-size: 13px; color: var(--body); max-width: 380px; display: block; }
+  .reminder-summary { display: flex; gap: 0; margin-bottom: 16px; background: var(--card-bg); border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); max-width: 400px; }
+  .reminder-card { flex: 1; padding: 18px 24px; text-align: center; border-right: 1px solid var(--border); }
+  .reminder-card:last-child { border-right: none; }
+  .reminder-card .num { font-size: 30px; font-weight: 700; color: var(--dark); }
+  .reminder-card.gold .num { color: var(--gold); }
+  .reminder-card .label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--body); margin-top: 4px; }
+  .phone { font-weight: 600; color: var(--dark); white-space: nowrap; }
+  .notes { font-size: 13px; color: var(--body); max-width: 320px; }
+  .notes.active { font-weight: 600; color: var(--green); }
+  .time { color: #888; white-space: nowrap; font-size: 13px; }
+  .recording-cell { display: flex; align-items: center; gap: 8px; }
+  .recording-link { color: var(--gold); text-decoration: none; font-weight: 600; }
+  .recording-link:hover { text-decoration: underline; }
+  .play-btn {
+    background: var(--gold); color: var(--white); border: none;
+    width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+    font-size: 12px; display: flex; align-items: center; justify-content: center;
+    transition: background 0.2s; flex-shrink: 0;
+  }
+  .play-btn:hover { background: var(--gold-light); }
+  /* Loading & empty states */
+  .loading {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--body);
+    font-size: 18px;
+  }
+  .loading .spinner {
+    display: inline-block;
+    width: 40px; height: 40px;
+    border: 3px solid var(--border);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: #999;
+    font-size: 16px;
+  }
+  .error {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--red);
+    font-size: 16px;
+    background: #fde8e8;
+    border-radius: 8px;
+    margin: 20px 40px;
+  }
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 24px;
+    color: #aaa;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <img src="https://images.squarespace-cdn.com/content/v1/545507d4e4b00bce94d4f0bc/03339658-856b-4e43-b638-19e537c392c2/Logo.png?format=1500w" alt="The Bell Tower on 34th">
+  <div>
+    <h1>Leads Report</h1>
+    <div class="subtitle">The Bell Tower on 34th</div>
+    <a href="/conversations" class="header-link">📣 Review Conversations</a>
+  </div>
+</div>
+
+<div class="controls">
+  <label>From</label>
+  <input type="date" id="dateStart">
+  <label>To</label>
+  <input type="date" id="dateEnd">
+  <button class="btn" id="runBtn" onclick="fetchLeads()">Run Report</button>
+  <div class="quick-btns">
+    <button class="quick-btn" onclick="setRange('today')">Today</button>
+    <button class="quick-btn" onclick="setRange('yesterday')">Yesterday</button>
+    <button class="quick-btn" onclick="setRange('7d')">Last 7 Days</button>
+    <button class="quick-btn" onclick="setRange('30d')">Last 30 Days</button>
+  </div>
+</div>
+
+<div class="summary-bar" id="summaryBar" style="display:none;">
+  <div class="summary-card"><div class="num" id="sumTotal">0</div><div class="label">Total Leads</div></div>
+  <div class="summary-card green"><div class="num" id="sumSent">0</div><div class="label">Sent</div></div>
+  <div class="summary-card gold"><div class="num" id="sumReplies">0</div><div class="label">Replies</div></div>
+  <div class="summary-card gold"><div class="num" id="sumGHL">0</div><div class="label">GHL Webform</div></div>
+  <div class="summary-card gold"><div class="num" id="sumPlatform">0</div><div class="label">Platform</div></div>
+  <div class="summary-card gold"><div class="num" id="sumPhone">0</div><div class="label">Phone Leads</div></div>
+</div>
+
+<div class="content" id="content">
+  <div class="loading">
+    <div class="spinner"></div>
+    <p>Select a date range and click Run Report</p>
+  </div>
+</div>
+
+<div class="footer">The Bell Tower on 34th — Houston's Most Trusted Event Venue</div>
+
+<script>
+const CT_OFFSET = -5; // Central Time offset in hours
+
+// Set default to today
+function formatDate(d) {
+  return d.toISOString().split('T')[0];
+}
+
+function setRange(preset) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let start, end;
+  document.querySelectorAll('.quick-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+
+  if (preset === 'today') {
+    start = end = today;
+  } else if (preset === 'yesterday') {
+    start = new Date(today); start.setDate(start.getDate() - 1);
+    end = start;
+  } else if (preset === '7d') {
+    end = today;
+    start = new Date(today); start.setDate(start.getDate() - 6);
+  } else if (preset === '30d') {
+    end = today;
+    start = new Date(today); start.setDate(start.getDate() - 29);
+  }
+  document.getElementById('dateStart').value = formatDate(start);
+  document.getElementById('dateEnd').value = formatDate(end);
+  fetchLeads();
+}
+
+// Init with today
+document.getElementById('dateStart').value = formatDate(new Date());
+document.getElementById('dateEnd').value = formatDate(new Date());
+
+function fmtPhone(phone) {
+  if (!phone) return '—';
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return `(${digits.slice(1,4)}) ${digits.slice(4,7)}-${digits.slice(7,11)}`;
+  } else if (digits.length === 10) {
+    return `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6,10)}`;
+  }
+  return phone;
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' }) + ' CT';
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' });
+}
+
+function channelBadge(channel) {
+  if (channel === 'GHL Webform') return '<span class="badge badge-ghl">GHL Webform</span>';
+  if (channel === 'WeddingWire') return '<span class="badge badge-platform">WeddingWire</span>';
+  if (channel === 'TheKnot') return '<span class="badge badge-platform">TheKnot</span>';
+  if (channel === 'Zola') return '<span class="badge badge-platform">Zola</span>';
+  if (channel === 'Phone Leads') return '<span class="badge badge-vapi">Phone Leads</span>';
+  return `<span class="badge badge-ghl">${channel}</span>`;
+}
+
+function typeBadge(type) {
+  if (!type) return '';
+  const t = type.toLowerCase();
+  if (t.includes('bridal') && !t.includes('non')) return '<span class="badge badge-bridal">Bridal</span>';
+  if (t.includes('non')) return '<span class="badge badge-nonbridal">Non-Bridal</span>';
+  if (t.includes('spam')) return '<span class="badge badge-spam">Spam</span>';
+  return `<span class="badge badge-bridal">${type}</span>`;
+}
+
+function statusBadge(status) {
+  if (status === 'active') return '<span class="badge badge-active">Active Conversation</span>';
+  if (status === 'awaiting') return '<span class="badge badge-awaiting">Awaiting Reply</span>';
+  if (status === 'spam') return '<span class="badge badge-spam">No Contact Info</span>';
+  if (status === 'responded') return '<span class="badge badge-responded">Responded</span>';
+  return '';
+}
+
+async function fetchLeads() {
+  const start = document.getElementById('dateStart').value;
+  const end = document.getElementById('dateEnd').value;
+  if (!start || !end) return;
+
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.textContent = 'Loading...';
+  document.getElementById('content').innerHTML = '<div class="loading"><div class="spinner"></div><p>Fetching leads...</p></div>';
+
+  try {
+    const resp = await fetch(`https://leads.bell34hooks.com/api/leads?start=${start}&end=${end}`);
+    if (!resp.ok) throw new Error('API returned ' + resp.status);
+    const data = await resp.json();
+
+    renderReport(data);
+  } catch (err) {
+    document.getElementById('content').innerHTML = `<div class="error">Error fetching leads: ${err.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Report';
+  }
+}
+
+function renderReport(data) {
+  const { leads, nonLeadCalls, summary } = data;
+  const content = document.getElementById('content');
+
+  // Update summary bar
+  document.getElementById('summaryBar').style.display = 'flex';
+  document.getElementById('sumTotal').textContent = summary.total;
+  document.getElementById('sumSent').textContent = summary.sent;
+  document.getElementById('sumReplies').textContent = summary.replies;
+  document.getElementById('sumGHL').textContent = summary.ghl;
+  document.getElementById('sumPlatform').textContent = summary.platform;
+  document.getElementById('sumPhone').textContent = summary.phone;
+
+  let html = '';
+
+  if (leads.length === 0 && nonLeadCalls.length === 0) {
+    content.innerHTML = '<div class="empty">No leads found for this date range.</div>';
+    return;
+  }
+
+  // Group leads by channel
+  const ghl = leads.filter(l => l.channel === 'GHL Webform');
+  const platform = leads.filter(l => ['WeddingWire', 'TheKnot', 'Zola'].includes(l.channel));
+  const phone = leads.filter(l => l.channel === 'Phone Leads');
+
+  if (ghl.length > 0) {
+    html += '<div class="section-title">GHL Webform (' + ghl.length + ')</div>';
+    html += renderTable(ghl, ['name', 'phone', 'time', 'speed', 'conv', 'type', 'inquiry', 'notes']);
+  }
+
+  if (platform.length > 0) {
+    html += '<div class="section-title">Platform Leads (' + platform.length + ')</div>';
+    html += renderTable(platform, ['name', 'time', 'eventDetails', 'speed', 'inquiry', 'notes']);
+  }
+
+  if (phone.length > 0) {
+    html += '<div class="section-title">Phone Leads (' + phone.length + ')</div>';
+    html += renderTable(phone, ['name', 'phone', 'time', 'smsSent', 'notes']);
+  }
+
+  if (nonLeadCalls.length > 0) {
+    html += '<div class="section-title">Non-Lead Calls (' + nonLeadCalls.length + ')</div>';
+    html += renderTable(nonLeadCalls, ['name', 'category', 'phone', 'time', 'smsSent', 'notes']);
+  }
+
+  // Slot Open Reminders section
+  if (summary.reminders) {
+    html += '<div class="section-title">Slot Open Reminders</div>';
+    html += '<div class="reminder-summary">';
+    html += '<div class="reminder-card"><div class="num">' + (summary.reminders.scheduled || 0) + '</div><div class="label">Scheduled</div></div>';
+    html += '<div class="reminder-card gold"><div class="num">' + (summary.reminders.sent || 0) + '</div><div class="label">Sent</div></div>';
+    html += '</div>';
+    if (summary.reminders.rows && summary.reminders.rows.length > 0) {
+      html += renderTable(summary.reminders.rows, ['prospect', 'preferred', 'status', 'time']);
+    } else {
+      html += '<div class="empty" style="padding:20px;">No reminders in this window.</div>';
+    }
+  }
+
+  content.innerHTML = html;
+}
+
+function renderTable(rows, columns) {
+  const headers = {
+    name: 'Name', channel: 'Channel', phone: 'Phone', time: 'Time (CT) · Date',
+    type: 'Type', notes: 'Notes', eventDetails: 'Event Details',
+    speed: 'Speed', conv: 'Conversation', inquiry: 'Inquiry', smsSent: 'SMS Sent',
+    category: 'Category',
+    prospect: 'Prospect / Phone', preferred: 'Preferred Days', status: 'Status'
+  };
+
+  let html = '<table><thead><tr>';
+  columns.forEach(col => html += `<th>${headers[col]}</th>`);
+  html += '</tr></thead><tbody>';
+
+    rows.forEach((row, i) => {
+    html += '<tr>';
+    columns.forEach(col => {
+      let val = '';
+      if (col === 'name' && row.recordingUrl) {
+        // Phone call — name is a clickable audio player link
+        const fullUrl = `https://leads.bell34hooks.com${row.recordingUrl}`;
+        val = `<div class="recording-cell">
+          <a href="${fullUrl}" target="_blank" class="recording-link">${row.name}</a>
+          <button class="play-btn" onclick="playRecording('${fullUrl}', this)">▶</button>
+        </div>`;
+      }
+      else if (col === 'channel') val = channelBadge(row.channel);
+      else if (col === 'phone') val = `<span class="phone">${fmtPhone(row.phone)}</span>`;
+      else if (col === 'time') val = `<span class="time">${fmtDate(row.timestamp)} ${fmtTime(row.timestamp)}</span>`;
+      else if (col === 'type') val = typeBadge(row.type);
+      else if (col === 'speed') {
+        const speed = row.responseSpeed || '—';
+        if (speed !== '—' && speed.includes('s')) val = `<span class="speed-fast">${speed}</span>`;
+        else if (speed !== '—' && speed.includes('m') && parseInt(speed) <= 2) val = `<span class="speed-fast">${speed}</span>`;
+        else if (speed !== '—') val = `<span class="speed-slow">${speed}</span>`;
+        else val = `<span class="speed-na">—</span>`;
+      }
+      else if (col === 'conv') {
+        const conv = row.conversationStatus || '';
+        if (conv.startsWith('In conversation')) val = `<span class="badge badge-active conv-wrap">${conv}</span>`;
+        else if (conv === 'No reply yet') val = `<span class="badge badge-awaiting">${conv}</span>`;
+        else if (conv === 'No SMS history') val = `<span class="speed-na">—</span>`;
+        else val = `<span class="speed-na">—</span>`;
+      }
+      else if (col === 'smsSent') {
+        const notes = (row.notes || '').toLowerCase();
+        if (notes.includes('post-call sms sent +') || notes.includes('post-call sms sent + prospect replied') || notes.includes('post-call sms sent, no reply')) val = '<span class="speed-fast">Y</span>';
+        else if (notes.includes('no post-call sms')) val = '<span class="speed-slow">N</span>';
+        else if (notes.includes('post-call sms sent')) val = '<span class="speed-fast">Y</span>';
+        else val = '<span class="speed-slow">N</span>';
+      }
+      else if (col === 'inquiry') {
+        const q = row.inquiry || '';
+        if (q) val = `<span class="inquiry">${q}</span>`;
+        else val = `<span class="speed-na">—</span>`;
+      }
+      else if (col === 'notes') {
+        if (row.status === 'active') val = `<span class="notes active">${row.notes || ''}</span>`;
+        else val = `<span class="notes">${row.notes || ''}</span>`;
+      }
+      else if (col === 'eventDetails') val = row.eventDetails || '—';
+      else if (col === 'category') {
+        const cat = row.category || '';
+        if (cat) val = `<span class="badge badge-awaiting">${cat}</span>`;
+        else val = `<span class="speed-na">—</span>`;
+      }
+      else if (col === 'prospect') {
+        // Prospect / Phone combined: name if present, else formatted phone
+        const p = row.prospect || row.name || row.phone || '';
+        if (p && /^\+\d/.test(p)) val = `<span class="phone">${fmtPhone(p)}</span>`;
+        else val = `<span class="phone">${p || '—'}</span>`;
+      }
+      else if (col === 'status') {
+        const st = (row.status || '').toLowerCase();
+        if (st === 'sent') val = '<span class="badge badge-active">Sent</span>';
+        else if (st === 'created') val = '<span class="badge badge-awaiting">Created</span>';
+        else val = row.status || '—';
+      }
+      else if (col === 'preferred') val = row.preferred || '—';
+      else val = row[col] || '—';
+      html += `<td>${val}</td>`;
+    });
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  return html;
+}
+
+let currentAudio = null;
+function playRecording(url, btn) {
+  // If this specific recording is already playing, pause it and keep position
+  if (currentAudio && currentAudio.src === url && !currentAudio.paused) {
+    currentAudio.pause();
+    btn.textContent = '▶';
+    return;
+  }
+
+  // If this specific recording is paused, resume from where it stopped
+  if (currentAudio && currentAudio.src === url && currentAudio.paused) {
+    currentAudio.play();
+    btn.textContent = '⏸';
+    return;
+  }
+
+  // Different recording — stop the old one, start new
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+    document.querySelectorAll('.play-btn').forEach(b => b.textContent = '▶');
+  }
+
+  const audio = new Audio(url);
+  audio.play();
+  currentAudio = audio;
+  btn.textContent = '⏸';
+  audio.onended = () => {
+    btn.textContent = '▶';
+    currentAudio = null;
+  };
+  audio.onerror = () => {
+    btn.textContent = '▶';
+    currentAudio = null;
+    alert('Could not load recording. The VAPI presigned URL may have expired.');
+  };
+}
+</script>
+</body>
+</html>
