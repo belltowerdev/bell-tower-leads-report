@@ -328,14 +328,22 @@
 <script>
 const CT_OFFSET = -5; // Central Time offset in hours
 
-// Set default to today
+// Set default to today (in Central Time)
 function formatDate(d) {
-  return d.toISOString().split('T')[0];
+  // Use Central Time instead of UTC to avoid showing tomorrow's date after 10pm CT
+  const ctDate = new Date(d.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  const year = ctDate.getFullYear();
+  const month = String(ctDate.getMonth() + 1).padStart(2, '0');
+  const day = String(ctDate.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function setRange(preset) {
   const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // Get today in Central Time
+  const todayStr = now.toLocaleDateString('en-US', { timeZone: 'America/Chicago' });
+  const [month, day, year] = todayStr.split('/');
+  const today = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
   let start, end;
   document.querySelectorAll('.quick-btn').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
