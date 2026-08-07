@@ -390,15 +390,13 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
         for line in open(webhook_log, errors='ignore'):
             if '[GHL-FORM] name=' not in line:
                 continue
-            ts_str = line[:19]
+            # Extract the date from the log line (format: 2026-08-06 ...)
+            # Log lines start with YYYY-MM-DD HH:MM:SS
+            line_date = line[:10]  # First 10 chars are the date
             try:
-                import re as _re
-                _m = _re.match(r'\[(\d{2}:\d{2}:\d{2})\]', line)
-                if not _m:
-                    continue
-                today_str = start_ct.strftime("%Y-%m-%d")
-                ts = datetime.strptime(today_str + " " + _m.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=CT)
-                if not (start_ct <= ts <= end_ct):
+                line_dt = datetime.strptime(line_date, "%Y-%m-%d").replace(tzinfo=CT)
+                # Skip if this line's date is outside the requested range
+                if not (start_ct <= line_dt <= end_ct):
                     continue
             except:
                 continue
@@ -429,7 +427,7 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                 'channel': 'GHL Webform',
                 'phone': phone,
                 'email': email,
-                'timestamp': ts.isoformat(),
+                'timestamp': line_dt.isoformat(),
                 'type': lead_type,
                 'status': 'responded',
                 'notes': 'First-touch sent (email + SMS), awaiting reply',

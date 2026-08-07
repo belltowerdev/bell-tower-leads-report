@@ -647,8 +647,11 @@ class FeedbackHandler(BaseHTTPRequestHandler):
         if params.get('subsource'):
             result = [t for t in result if t.get('subsource', '') == params['subsource'][0]]
         
-        # Sort by created_at descending
-        result.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        # Sort by created_at descending (handle None values)
+        def _sort_key(x):
+            ts = x.get('created_at', '') or ''
+            return ts if ts else ''
+        result.sort(key=_sort_key, reverse=True)
         
         self.send_json_response({'threads': result, 'count': len(result)})
     
