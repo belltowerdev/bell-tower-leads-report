@@ -335,10 +335,50 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                 ts = datetime.fromisoformat(da.replace('Z', '+00:00'))
                 ts_ct = ts.astimezone(CT)
                 if start_ct <= ts_ct <= end_ct:
+                    # Determine actual source — only real webform submissions should be "GHL Webform"
+                    # GHL creates contacts from multiple sources (phone calls, AgentMail, cadence poller)
                     tags = c.get('tags', [])
                     is_bridal = any('bridal' in t.lower() and 'non bridal' not in t.lower() for t in tags)
                     is_non_bridal = any('non bridal' in t.lower() for t in tags)
+                    contact_source = (c.get('source') or '').strip().lower()
+                    tag_source = ' '.join(tags).lower()
+                    
+                    # Skip contacts that originated from phone calls, AgentMail, or social bridge — 
+                    # they're already captured by the Phone Leads, email, or social channels
+                    is_vapi_call = 'vapi-call' in tag_source
+                    is_agentmail = 'agentmail' in tag_source
+                    is_social = 'social' in tag_source or 'facebook' in tag_source
+                    # Skip platform relay emails — these are platform leads (TheKnot/WeddingWire/Zola)
+                    # that we created GHL records for; they're already counted as Platform leads
+                    contact_email = (c.get('email') or '').lower().strip()
+                    is_platform_relay = any(domain in contact_email for domain in (
+                        '@member.theknot.com', '@member.weddingwire.com',
+                        '@reply.weddingwire.com', '@zola.com',
+                    ))
+                    is_website = contact_source in ('main website', 'website', 'webform', 'organic', 'organic_direct') or 'contact us' in tag_source
+                    
+                    if is_vapi_call or is_agentmail or is_platform_relay or is_social:
+                        continue  # already shown in another channel
+                    
+                    # Skip contacts with no source, no tags, no email, AND no phone —
+                    # these were created by unknown system processes (social bridge, etc.)
+                    # and aren't real webform submissions
+                    contact_email_raw = (c.get('email') or '').strip()
+                    contact_phone_raw = (c.get('phone') or '').strip()
+                    if not contact_source and not tags and not contact_email_raw and not contact_phone_raw:
+                        continue
+                    
+                    first_name = (c.get('firstName') or '').strip()
+                    last_name = (c.get('lastName') or '').strip()
+                    full_name = f"{first_name} {last_name}".strip()
+                    if not first_name and not last_name:
+                        full_name = ''
                     has_contact = bool(c.get('email') or c.get('phone'))
+                    # Skip contacts with no name AND no contact info — not real leads
+                    if not full_name and not has_contact:
+                        continue
+                    if not full_name and has_contact:
+                        full_name = 'Unknown'
                     if is_non_bridal and not is_bridal:
                         lead_type = 'Non-Bridal'
                     elif is_bridal:
@@ -360,10 +400,11 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                             inquiry = extract_ghl_inquiry(rec['thread'])
                             replied = rec['replied']
                     leads.append({
-                        'name': f"{c.get('firstName', '')} {c.get('lastName', '')}".strip(),
+                        'name': full_name,
                         'channel': 'GHL Webform',
                         'phone': c.get('phone', ''),
                         'email': c.get('email', ''),
+                        'contactId': c.get('id', ''),
                         'timestamp': da,
                         'type': lead_type if has_contact else 'Spam',
                         'status': status,
@@ -380,6 +421,24 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
             break
         page += 1
     
+    # Deduplicate API results by contact ID (GHL search can return same contact twice)
+    seen_ids = set()
+    seen_keys = set()  # phone+timestamp dedup
+    deduped = []
+    for l in leads:
+        cid = l.get('contactId', '')
+        if cid and cid in seen_ids:
+            continue
+        if cid:
+            seen_ids.add(cid)
+        # Also dedup by phone+timestamp for contacts without ID
+        key = (l.get('phone', ''), l.get('timestamp', '')[:19])
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(l)
+    leads = deduped
+
     # Merge in GHL leads from thread files that aren't in the API results
     # (existing contacts re-submitting the webform keep their original dateAdded,
     # so they don't show up in the date-filtered API search).
@@ -805,6 +864,13 @@ def get_vapi_leads(env, start_ct, end_ct):
                 if started_dt:
                     duration = (ended_dt - started_dt).total_seconds()
             except: pass
+
+        # Transcript summary for the Inquiry column — Roger wants phone-lead
+        # transcript summaries shown in Inquiry instead of "—".
+        transcript_summary = (summary or '').strip()
+        # Clip long VAPI summaries to a readable inquiry cell (a sentence or two).
+        if len(transcript_summary) > 280:
+            transcript_summary = transcript_summary[:280].rsplit(' ', 1)[0] + '…'
         
         # Extract name from transcript
         name = extract_name_from_transcript(transcript)
@@ -852,7 +918,7 @@ def get_vapi_leads(env, start_ct, end_ct):
                 'notes': full_notes,
                 'callId': call_id,
                 'recordingUrl': f'/api/recording/{call_id}',
-                'inquiry': '',
+                'inquiry': transcript_summary,
                 'prospectReplied': 'prospect replied' in sms_status,
             })
             continue
@@ -911,6 +977,97 @@ def get_sms_conversations(env, start_ct, end_ct):
         if ts_ct < convos[phone_norm]['first']: convos[phone_norm]['first'] = ts_ct
         if ts_ct > convos[phone_norm]['last']: convos[phone_norm]['last'] = ts_ct
     return convos
+
+def merge_recent_duplicates(leads, window_minutes=10):
+    """Cross-channel merge/dedup: same normalized phone within N minutes → one row.
+
+    Roger (2026-08-12): "dedup should apply across all channels, it should be
+    more like a merge of a kind, with the most recent version being the one
+    that gets published, so it has the most up to date full intel on a lead."
+
+    Rules:
+    - Key = digits-only phone (only leads WITH a phone participate; platform
+      leads with no phone are left untouched).
+    - Records for the same phone whose timestamps are within `window_minutes`
+      of each other merge into ONE published row.
+    - The MOST RECENT record is the base (keeps newest timestamp, status,
+      recording, name, inquiry) so the published row has the latest intel.
+    - Missing/empty fields are backfilled from the older record(s) — a name,
+      transcript summary, notes, recording link, etc.
+    - Recording links from BOTH calls are preserved (first + latest) so the
+      merged row can still play either recording.
+    """
+    if not leads:
+        return leads
+    by_phone = {}
+    for l in leads:
+        digits = re.sub(r'\D', '', l.get('phone') or '')
+        if not digits:
+            continue
+        ts = l.get('timestamp', '') or ''
+        try:
+            dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        except Exception:
+            dt = None
+        by_phone.setdefault(digits, []).append({'lead': l, 'dt': dt})
+
+    window = timedelta(minutes=window_minutes)
+    used = set()
+    merged = []
+    for l in leads:
+        digits = re.sub(r'\D', '', l.get('phone') or '')
+        if not digits:
+            merged.append(l)
+            continue
+        if id(l) in used:
+            continue
+        # Group consecutive records for this phone that fall within the window
+        # of the group's earliest record. A call 3 days later is a NEW row,
+        # not a duplicate — only near-simultaneous records merge.
+        group_recs = sorted(
+            (x for x in by_phone.get(digits, []) if id(x['lead']) not in used),
+            key=lambda x: x['dt'] or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        group = []
+        group_start = None
+        for x in group_recs:
+            if x['dt'] is None:
+                continue
+            if group_start is None:
+                group_start = x['dt']
+                group.append(x)
+            elif x['dt'] - group_start <= window:
+                group.append(x)
+            else:
+                break  # too far past the window — leave for its own group
+        if not group:
+            merged.append(l)
+            continue
+        # Sort by timestamp; most recent LAST
+        group.sort(key=lambda x: x['dt'] or datetime.min.replace(tzinfo=timezone.utc))
+        base = group[-1]['lead']  # most recent wins
+        older = [x['lead'] for x in group[:-1]]
+        # Backfill missing fields from older records
+        for field in ('name', 'inquiry', 'notes', 'email', 'eventDetails'):
+            if not base.get(field) and older:
+                for old in older:
+                    if old.get(field):
+                        base[field] = old[field]
+                        break
+        # Preserve BOTH recording links (first + latest)
+        recordings = []
+        for x in group:
+            ru = x['lead'].get('recordingUrl')
+            if ru and ru not in recordings:
+                recordings.append(ru)
+        if len(recordings) > 1:
+            base['recordingUrl'] = recordings[-1]  # latest (playable)
+            base['recordings'] = recordings        # all (viewable)
+        for x in group:
+            used.add(id(x['lead']))
+        merged.append(base)
+    return merged
+
 
 def enrich_with_sms(leads, convos):
     # Load SMS thread enrichment once
@@ -1011,6 +1168,33 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_recording(call_id)
             return
         
+        # Proxy /api/threads/* and /api/feedback/* to the feedback API server (port 3980)
+        if parsed.path.startswith('/api/threads/') or parsed.path.startswith('/api/feedback'):
+            import urllib.request as _urllib_req
+            try:
+                proxy_url = f"http://127.0.0.1:3980{self.path}"
+                proxy_req = _urllib_req.Request(proxy_url)
+                # Forward POST body if present
+                if self.command == 'POST':
+                    content_len = int(self.headers.get('Content-Length', 0))
+                    post_body = self.rfile.read(content_len) if content_len > 0 else b''
+                    proxy_req = _urllib_req.Request(proxy_url, data=post_body, method='POST')
+                    proxy_req.add_header('Content-Type', self.headers.get('Content-Type', 'application/json'))
+                with _urllib_req.urlopen(proxy_req, timeout=30) as proxy_resp:
+                    proxy_data = proxy_resp.read()
+                self.send_response(proxy_resp.status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(proxy_data)
+            except Exception as e:
+                self.send_response(502)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': f'Feedback API unavailable: {e}'}).encode())
+            return
+        
         if parsed.path != '/api/leads':
             self.send_response(404)
             self.end_headers()
@@ -1045,8 +1229,31 @@ class Handler(BaseHTTPRequestHandler):
         all_leads = ghl + platform + vapi
         convos = get_sms_conversations(env, start_ct, end_ct)
         all_leads = enrich_with_sms(all_leads, convos)
+        # Roger (2026-08-12): cross-channel merge — same phone within 10 min
+        # collapses to ONE published row (most recent wins, missing fields
+        # backfilled). Future-only by nature: dedup runs on the query window.
+        all_leads = merge_recent_duplicates(all_leads, window_minutes=10)
         all_leads.sort(key=lambda x: x.get('timestamp', ''))
         non_leads.sort(key=lambda x: x.get('timestamp', ''))
+
+        # Cross-channel dedup: remove GHL Webform leads that are actually platform leads
+        # (our system creates GHL contacts for platform inquiries — they shouldn't double-count)
+        platform_names = set()
+        for l in all_leads:
+            if l.get('channel') in ('WeddingWire', 'TheKnot', 'Zola'):
+                name = (l.get('name') or '').lower().strip()
+                if name:
+                    platform_names.add(name)
+        
+        if platform_names:
+            deduped = []
+            for l in all_leads:
+                if l.get('channel') == 'GHL Webform':
+                    name = (l.get('name') or '').lower().strip()
+                    if name in platform_names:
+                        continue  # already counted as a platform lead
+                deduped.append(l)
+            all_leads = deduped
         reminders = get_reminder_stats(start_ct, end_ct)
         # SENT = outbound sent for GHL + platform leads only (Phone Leads excluded)
         sent = sum(1 for l in all_leads if l['status'] in ('responded', 'active') and l['channel'] != 'Phone Leads')
