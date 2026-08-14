@@ -9,6 +9,7 @@ from pathlib import Path
 
 CT = timezone(timedelta(hours=-5))
 THREADS_DIR = Path('/home/ubuntu/.hermes/agents/mary/threads')
+THREADS_DIR_VAPI = Path('/home/ubuntu/.hermes/vapi-build/agents/mary/threads')
 SMS_THREADS_DIR = Path('/home/ubuntu/.hermes/sms-threads')
 VAPI_BUILD = '/home/ubuntu/.hermes/vapi-build'
 
@@ -61,9 +62,11 @@ def get_thread_enrichment():
     Each record: {'thread': dict, 'replied': bool, 'first_out': ts}
     replied = inbound message exists AFTER our first outbound (prospect actually replied)."""
     email_idx, name_idx = {}, {}
-    if not THREADS_DIR.exists():
+    if not THREADS_DIR.exists() and not THREADS_DIR_VAPI.exists():
         return email_idx, name_idx
-    for p in THREADS_DIR.glob('*.json'):
+    _thread_files = list(THREADS_DIR.glob('*.json')) if THREADS_DIR.exists() else []
+    _thread_files += list(THREADS_DIR_VAPI.glob('*.json')) if THREADS_DIR_VAPI.exists() else []
+    for p in _thread_files:
         try:
             with open(p) as f:
                 t = json.load(f)
@@ -448,7 +451,7 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
 
     # Scan ghl-lead-*.json thread files directly for today's submissions
     import glob as _glob
-    for thread_file in _glob.glob(str(THREADS_DIR / 'ghl-lead-*.json')):
+    for thread_file in list(_glob.glob(str(THREADS_DIR / 'ghl-lead-*.json'))) + list(_glob.glob(str(THREADS_DIR_VAPI / 'ghl-lead-*.json'))):
         try:
             with open(thread_file) as tf:
                 td = json.load(tf)

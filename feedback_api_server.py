@@ -38,6 +38,7 @@ import urllib.parse
 # Paths
 HERMES_ROOT = Path('/home/ubuntu/.hermes')
 THREADS_DIR = HERMES_ROOT / 'agents' / 'mary' / 'threads'
+THREADS_DIR_VAPI = HERMES_ROOT / 'vapi-build' / 'agents' / 'mary' / 'threads'
 SMS_THREADS_DIR = HERMES_ROOT / 'sms-threads'
 FEEDBACK_DIR = HERMES_ROOT / 'feedback'
 TRAINING_DIR = HERMES_ROOT / 'training'
@@ -345,8 +346,16 @@ def get_all_threads():
     threads = []
 
     # 1. Email threads (Mary) — covers GHL, platform, and direct
-    if THREADS_DIR.exists():
-        for p in THREADS_DIR.glob('*.json'):
+    # Scan BOTH the shared path and the vapi-build path (Mary writes new threads
+    # to vapi-build; the shared path has older threads). Dedup by thread_id/filename.
+    _seen_thread_files = set()
+    for _threads_dir in (THREADS_DIR, THREADS_DIR_VAPI):
+        if not _threads_dir.exists():
+            continue
+        for p in _threads_dir.glob('*.json'):
+            if p.name in _seen_thread_files:
+                continue
+            _seen_thread_files.add(p.name)
             try:
                 with open(p) as f:
                     t = json.load(f)
@@ -587,6 +596,22 @@ def format_thread_for_display(thread):
             'channel': msg.get('channel', ''),
             'has_feedback': check_message_feedback(thread.get('thread_id') or thread.get('phone', ''), idx)
         })
+    
+    # Dedup: remove consecutive messages with identical text within 2 minutes
+    # (GHL threads have both the original inbound and a copy with direction=inbound)
+    deduped = []
+    for m in messages:
+        if deduped:
+            prev = deduped[-1]
+            prev_text = (prev.get('text') or '').strip()[:200]
+            curr_text = (m.get('text') or '').strip()[:200]
+            if prev_text == curr_text:
+                # Keep the one with direction field set (more complete)
+                if not prev.get('direction') and m.get('direction'):
+                    deduped[-1] = m
+                continue
+        deduped.append(m)
+    messages = deduped
     
     # Determine channel and subsource
     source = thread.get('_source', 'unknown')
