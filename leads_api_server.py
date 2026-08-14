@@ -628,10 +628,15 @@ def get_platform_leads(env, start_ct, end_ct, name_idx=None):
                     event_details += f" · {guests} guests"
                 if budget:
                     event_details += f" · Budget: {budget}"
+                # Extract lead_id from the lead file path (e.g. KNOT-20260814-NAME)
+                lead_id = ''
+                if lead_file_path:
+                    lead_id = os.path.basename(lead_file_path).replace('.json', '')
                 leads.append({
                     'name': name,
                     'channel': platform,
                     'phone': '', 'email': '',
+                    'contactId': lead_id,
                     'timestamp': ts.isoformat(),
                     'type': 'Bridal',
                     'status': 'responded',

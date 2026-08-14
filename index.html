@@ -395,6 +395,23 @@
   .ch-sms { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
   .ch-voice { background: #fff3e0; color: #e65100; border: 1px solid #ffe0b2; }
   .ch-direct { background: #f5f5f5; color: #424242; border: 1px solid #e0e0e0; }
+  .id-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-family: monospace;
+    color: #999;
+    background: #f5f5f5;
+    padding: 1px 5px;
+    border-radius: 4px;
+    margin-top: 3px;
+    cursor: pointer;
+    border: 1px solid #e0e0e0;
+    transition: all 0.15s;
+    user-select: all;
+  }
+  .id-badge:hover { color: #333; background: #e8e2d9; border-color: var(--gold); }
+  .id-badge:active { background: var(--gold); color: #fff; }
+  .id-badge.copied { background: #2d8659; color: #fff; border-color: #2d8659; }
 </style>
 </head>
 <body>
@@ -683,10 +700,15 @@ function renderTable(rows, columns, clickable) {
       if (col === 'name' && row.recordingUrl) {
         // Phone call — name is a clickable audio player link
         const fullUrl = `https://leads.bell34hooks.com${row.recordingUrl}`;
+        const idHtml = row.callId ? `<span class="id-badge" onclick="copyId('${row.callId}', this)" title="Click to copy call ID">${row.callId.substring(0,12)}…</span>` : '';
         val = `<div class="recording-cell">
           <a href="${fullUrl}" target="_blank" class="recording-link">${row.name}</a>
           <button class="play-btn" onclick="playRecording('${fullUrl}', this)">▶</button>
-        </div>`;
+        </div>${idHtml}`;
+      }
+      else if (col === 'name') {
+        const idHtml = row.contactId ? `<span class="id-badge" onclick="copyId('${row.contactId}', this)" title="Click to copy contact ID">${row.contactId}</span>` : '';
+        val = `${row.name || '—'}${idHtml}`;
       }
       else if (col === 'channel') val = channelBadge(row.channel);
       else if (col === 'phone') val = `<span class="phone">${fmtPhone(row.phone)}</span>`;
@@ -1048,6 +1070,22 @@ async function submitFeedback() {
   } catch (err) {
     alert('Error submitting feedback: ' + err.message);
   }
+}
+
+// Copy contact/call ID to clipboard
+function copyId(id, el) {
+  navigator.clipboard.writeText(id).then(() => {
+    el.classList.add('copied');
+    el.textContent = '✓ Copied';
+    setTimeout(() => { el.classList.remove('copied'); el.textContent = id.substring(0,12) + (id.length > 12 ? '…' : ''); }, 1500);
+  }).catch(() => {
+    // Fallback for older browsers
+    const ta = document.createElement('textarea');
+    ta.value = id; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    el.classList.add('copied'); el.textContent = '✓ Copied';
+    setTimeout(() => { el.classList.remove('copied'); el.textContent = id.substring(0,12) + (id.length > 12 ? '…' : ''); }, 1500);
+  });
 }
 
 // Helpers
