@@ -877,6 +877,17 @@ def get_vapi_leads(env, start_ct, end_ct):
         # Transcript summary for the Inquiry column — Roger wants phone-lead
         # transcript summaries shown in Inquiry instead of "—".
         transcript_summary = (summary or '').strip()
+        # Filter VAPI hallucination from ultra-short calls (no transcript content)
+        _hallucination_markers = [
+            'i apologize, but i don\'t see',
+            'i don\'t see any transcript',
+            'the actual transcript appears to be missing',
+            'please provide the transcript text',
+            'transcript appears to be missing or blank',
+        ]
+        _sl_check = transcript_summary.lower()
+        if any(marker in _sl_check for marker in _hallucination_markers):
+            transcript_summary = ''  # Clear the hallucinated summary
         # Clip long VAPI summaries to a readable inquiry cell (a sentence or two).
         if len(transcript_summary) > 280:
             transcript_summary = transcript_summary[:280].rsplit(' ', 1)[0] + '…'
@@ -890,6 +901,12 @@ def get_vapi_leads(env, start_ct, end_ct):
         if not name:
             name = fmt_phone(phone) if phone else 'Unknown Caller'
         
+        # Ultra-short calls (< 5s) — caller hung up before any conversation.
+        # VAPI returns empty transcript + hallucinated summary. Replace with clear label.
+        if duration < 5:
+            transcript_summary = 'Caller hung up immediately — no conversation took place'
+            summary = ''  # Suppress hallucinated summary for downstream code
+
         # Generate substantive notes from transcript analysis
         call_notes = analyze_call_outcome(transcript, summary, duration, ended_reason)
         
