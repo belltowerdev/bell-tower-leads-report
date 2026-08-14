@@ -412,6 +412,32 @@
   .id-badge:hover { color: #333; background: #e8e2d9; border-color: var(--gold); }
   .id-badge:active { background: var(--gold); color: #fff; }
   .id-badge.copied { background: #2d8659; color: #fff; border-color: #2d8659; }
+  .search-wrap {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .search-wrap label {
+    font-size: 12px;
+    color: #999;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  #searchInput {
+    font-family: 'Source Sans Pro', sans-serif;
+    font-size: 15px;
+    padding: 9px 16px;
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    color: var(--dark);
+    background: var(--white);
+    outline: none;
+    transition: border-color 0.2s;
+    width: 220px;
+  }
+  #searchInput:focus { border-color: var(--gold); }
+  #searchInput::placeholder { color: #bbb; }
 </style>
 </head>
 <body>
@@ -435,6 +461,9 @@
     <button class="quick-btn" onclick="setRange('yesterday')">Yesterday</button>
     <button class="quick-btn" onclick="setRange('7d')">Last 7 Days</button>
     <button class="quick-btn" onclick="setRange('30d')">Last 30 Days</button>
+  </div>
+  <div class="search-wrap">
+    <input type="text" id="searchInput" placeholder="Search name or phone..." oninput="filterLeads()">
   </div>
 </div>
 
@@ -599,6 +628,49 @@ function statusBadge(status) {
   return '';
 }
 
+// Filter leads by name or phone (real-time search)
+function filterLeads() {
+  const q = document.getElementById('searchInput').value.toLowerCase().trim();
+  if (!window.__allLeadsData) return;
+  if (!q) {
+    // Empty search — re-render full report
+    renderReport(window.__allLeadsData);
+    return;
+  }
+  const { leads, nonLeadCalls, summary } = window.__allLeadsData;
+  const content = document.getElementById('content');
+  window.__leadRows = [];
+
+  // Update summary bar
+  document.getElementById('summaryBar').style.display = 'flex';
+  document.getElementById('sumTotal').textContent = summary.total;
+  document.getElementById('sumSent').textContent = summary.sent;
+  document.getElementById('sumReplies').textContent = summary.replies;
+  document.getElementById('sumGHL').textContent = summary.ghl;
+  document.getElementById('sumPlatform').textContent = summary.platform;
+  document.getElementById('sumPhone').textContent = summary.phone;
+
+  // Filter rows matching the search query
+  const allRows = [...leads, ...nonLeadCalls];
+  const filtered = allRows.filter(row => {
+    const name = (row.name || '').toLowerCase();
+    const phone = (row.phone || '').toLowerCase();
+    const phoneDigits = (row.phone || '').replace(/\D/g, '');
+    const qDigits = q.replace(/\D/g, '');
+    return name.includes(q) || phone.includes(q) || (qDigits && phoneDigits.includes(qDigits));
+  });
+  filtered.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+
+  let html = '';
+  if (filtered.length === 0) {
+    html += '<div class="empty">No leads match your search.</div>';
+  } else {
+    html += '<div class="section-title">Search Results (' + filtered.length + ')</div>';
+    html += renderTable(filtered, ['channel', 'type', 'name', 'phone', 'time', 'speed', 'details', 'conv'], true);
+  }
+  content.innerHTML = html;
+}
+
 async function fetchLeads() {
   const start = document.getElementById('dateStart').value;
   const end = document.getElementById('dateEnd').value;
@@ -627,6 +699,8 @@ function renderReport(data) {
   const { leads, nonLeadCalls, summary } = data;
   const content = document.getElementById('content');
   window.__leadRows = [];  // lead identity map for row clicks
+  window.__allLeadsData = { leads, nonLeadCalls, summary };  // store for search filter
+  document.getElementById('searchInput').value = '';  // reset search on new report
 
   // Update summary bar
   document.getElementById('summaryBar').style.display = 'flex';
