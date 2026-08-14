@@ -489,6 +489,7 @@
 <div class="footer">The Bell Tower on 34th — Houston's Most Trusted Event Venue</div>
 
 <script>
+const API_BASE = 'https://leads.bell34hooks.com';
 const CT_OFFSET = -5; // Central Time offset in hours
 
 // Set default to today (in Central Time)
@@ -546,7 +547,7 @@ function fmtPhone(phone) {
 function fmtTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
-  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' }) + ' CT';
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' }) + ' CT';
 }
 
 function fmtDate(iso) {
@@ -622,34 +623,17 @@ function renderReport(data) {
   let html = '';
 
   if (leads.length === 0 && nonLeadCalls.length === 0) {
-    content.innerHTML = '<div class="empty">No leads found for this date range.</div>';
+    html += '<div class="empty">No leads or calls in this date range.</div>';
+    content.innerHTML = html;
     return;
   }
 
-  // Group leads by channel
-  const ghl = leads.filter(l => l.channel === 'GHL Webform');
-  const platform = leads.filter(l => ['WeddingWire', 'TheKnot', 'Zola'].includes(l.channel));
-  const phone = leads.filter(l => l.channel === 'Phone Leads');
+  // Merge all leads into one chronological list with a Channel column
+  const allRows = [...leads, ...nonLeadCalls];
+  allRows.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
 
-  if (ghl.length > 0) {
-    html += '<div class="section-title">GHL Webform (' + ghl.length + ')</div>';
-    html += renderTable(ghl, ['name', 'phone', 'time', 'speed', 'conv', 'type', 'inquiry', 'notes'], true);
-  }
-
-  if (platform.length > 0) {
-    html += '<div class="section-title">Platform Leads (' + platform.length + ')</div>';
-    html += renderTable(platform, ['name', 'time', 'eventDetails', 'speed', 'inquiry', 'notes'], true);
-  }
-
-  if (phone.length > 0) {
-    html += '<div class="section-title">Phone Leads (' + phone.length + ')</div>';
-    html += renderTable(phone, ['name', 'phone', 'time', 'smsSent', 'notes'], true);
-  }
-
-  if (nonLeadCalls.length > 0) {
-    html += '<div class="section-title">Non-Lead Calls (' + nonLeadCalls.length + ')</div>';
-    html += renderTable(nonLeadCalls, ['name', 'category', 'phone', 'time', 'smsSent', 'notes'], true);
-  }
+  html += '<div class="section-title">All Leads &amp; Calls (' + allRows.length + ')</div>';
+  html += renderTable(allRows, ['channel', 'type', 'name', 'phone', 'time', 'speed', 'details', 'conv'], true);
 
   // Slot Open Reminders section
   if (summary.reminders) {
@@ -670,10 +654,10 @@ function renderReport(data) {
 
 function renderTable(rows, columns, clickable) {
   const headers = {
-    name: 'Name', channel: 'Channel', phone: 'Phone', time: 'Time (CT) · Date',
+    name: 'Name', channel: 'Channel', phone: 'Phone', time: 'Time',
     type: 'Type', notes: 'Notes', eventDetails: 'Event Details',
-    speed: 'Speed', conv: 'Conversation', inquiry: 'Inquiry', smsSent: 'SMS Sent',
-    category: 'Category',
+    speed: 'Speed', conv: 'Conversation / Notes', inquiry: 'Inquiry', smsSent: 'SMS',
+    category: 'Category', details: 'Event Details / Inquiry',
     prospect: 'Prospect / Phone', preferred: 'Preferred Days', status: 'Status'
   };
 
@@ -706,7 +690,7 @@ function renderTable(rows, columns, clickable) {
       }
       else if (col === 'channel') val = channelBadge(row.channel);
       else if (col === 'phone') val = `<span class="phone">${fmtPhone(row.phone)}</span>`;
-      else if (col === 'time') val = `<span class="time">${fmtDate(row.timestamp)} ${fmtTime(row.timestamp)}</span>`;
+      else if (col === 'time') val = `<span class="time">${fmtTime(row.timestamp)}</span>`;
       else if (col === 'type') val = typeBadge(row.type);
       else if (col === 'speed') {
         const speed = row.responseSpeed || '—';
@@ -716,11 +700,26 @@ function renderTable(rows, columns, clickable) {
         else val = `<span class="speed-na">—</span>`;
       }
       else if (col === 'conv') {
+        // Merged: conversation status + notes
         const conv = row.conversationStatus || '';
-        if (conv.startsWith('In conversation')) val = `<span class="badge badge-active conv-wrap">${conv}</span>`;
-        else if (conv === 'No reply yet') val = `<span class="badge badge-awaiting">${conv}</span>`;
-        else if (conv === 'No SMS history') val = `<span class="speed-na">—</span>`;
-        else val = `<span class="speed-na">—</span>`;
+        const notes = row.notes || '';
+        let parts = [];
+        if (conv && conv !== '—' && conv !== 'No SMS history') parts.push(conv);
+        if (notes) parts.push(notes);
+        if (parts.length === 0) {
+          val = '<span class="speed-na">—</span>';
+        } else if (row.status === 'active') {
+          val = `<span class="notes active">${parts.join(' · ')}</span>`;
+        } else {
+          val = `<span class="notes">${parts.join(' · ')}</span>`;
+        }
+      }
+      else if (col === 'details') {
+        // Merged: event details + inquiry
+        let parts = [];
+        if (row.eventDetails && row.eventDetails !== '—') parts.push(row.eventDetails);
+        if (row.inquiry) parts.push(row.inquiry);
+        val = parts.length > 0 ? `<span class="inquiry">${parts.join(' · ')}</span>` : '<span class="speed-na">—</span>';
       }
       else if (col === 'smsSent') {
         const notes = (row.notes || '').toLowerCase();
@@ -833,7 +832,7 @@ function openLeadThread(rowIdx, evt) {
   if (lead.name) qs.set('name', lead.name);
   if (lead.timestamp) qs.set('timestamp', lead.timestamp);
 
-  fetch(`/api/threads/find?${qs.toString()}`)
+  fetch(`${API_BASE}/api/threads/find?${qs.toString()}`)
     .then(r => r.json())
     .then(data => {
       if (data.found && data.thread) {
@@ -890,9 +889,11 @@ function renderThreadViewer(thread) {
     const timeStr = formatTime(msg.timestamp);
     const fbMark = msg.has_feedback ? ' <span class="feedback-check">✓</span>' : '';
     const channelLabel = messageChannelLabel(msg, thread);
+    // Show channel tag on ALL messages (both agent and customer)
+    const customerChannelTag = !isAgent && channelLabel ? `<div class="channel-tag ${channelLabel.cls}">${channelLabel.text}</div>` : '';
     html += `
       <div class="chat-message ${isAgent ? 'agent' : 'customer'}">
-        ${isAgent && channelLabel ? `<div class="channel-tag ${channelLabel.cls}">${channelLabel.text}</div>` : ''}
+        ${channelLabel ? `<div class="channel-tag ${channelLabel.cls}">${channelLabel.text}</div>` : ''}
         <div class="chat-bubble">${escapeHtml(msg.text || '')}</div>
         <div class="chat-meta">
           <span>${speaker}${fbMark}</span>
@@ -920,60 +921,57 @@ function threadChannelName(thread) {
 
 // Resolve which channel Mary sent a message from. Returns {text, cls} or null.
 function messageChannelLabel(msg, thread) {
-  if (msg.role !== 'agent') return null;
-
   // Server-tagged channel (cross-channel merged view) — highest authority
   if (msg.channel) {
     const ch = String(msg.channel).toLowerCase();
-    if (ch === 'agentmail') return { text: '✉️ AgentMail (mary@venue.belltoweron34th.com)', cls: 'ch-agentmail' };
-    if (ch === 'planning') return { text: '✉️ Planning@ (planning@belltoweron34th.com)', cls: 'ch-planning' };
-    if (ch === 'sms') return { text: '📱 Twilio SMS', cls: 'ch-sms' };
-    if (ch === 'voice') return { text: '📞 Voice (Mary on call)', cls: 'ch-voice' };
+    if (ch === 'agentmail') return { text: '✉️ AgentMail', cls: 'ch-agentmail' };
+    if (ch === 'planning') return { text: '✉️ Planning@', cls: 'ch-planning' };
+    if (ch === 'sms') return { text: '📱 SMS', cls: 'ch-sms' };
+    if (ch === 'voice') return { text: '📞 Voice', cls: 'ch-voice' };
     return { text: '✉️ Email', cls: 'ch-direct' };
   }
 
+  // For customer (inbound) messages, infer channel from message fields
   const from = String(msg.from || '').toLowerCase();
   const to = String(msg.to || '').toLowerCase();
   const src = String(thread.source || '').toLowerCase();
   const sub = String(thread.subsource || '').toLowerCase();
+  const direction = String(msg.direction || '').toLowerCase();
+  const isAgent = msg.role === 'agent';
 
-  // SMS (Twilio) — thread source is sms, or message came from the sms synthetic domain
+  // SMS — thread source is sms, or message involves the sms domain
   if (src === 'sms' || from.includes('sms.belltoweron34th.com') || to.includes('sms.belltoweron34th.com')) {
-    return { text: '📱 Twilio SMS', cls: 'ch-sms' };
+    return { text: '📱 SMS', cls: 'ch-sms' };
   }
 
-  // Voice-call linked SMS follow-ups
-  if (msg.source === 'post_call_sms' || sub === 'post_call_sms') {
-    return { text: '📱 Twilio SMS (post-call)', cls: 'ch-sms' };
-  }
-
-  // Platform emails go out from planning@belltoweron34th.com (Gmail)
-  if (from.includes('planning@belltoweron34th.com')) {
-    return { text: '✉️ Planning@ (planning@belltoweron34th.com)', cls: 'ch-planning' };
-  }
-
-  // GHL webform replies go out from mary@venue.belltoweron34th.com (AgentMail)
-  if (from.includes('mary@venue.belltoweron34th.com') || sub === 'ghl') {
-    return { text: '✉️ AgentMail (mary@venue.belltoweron34th.com)', cls: 'ch-agentmail' };
-  }
-
-  // Voice — Mary speaks on the phone; if there's no email/sms signature it's a call
+  // Voice
   if (src === 'voice' || sub === 'vapi_call') {
-    return { text: '📞 Voice (Mary on call)', cls: 'ch-voice' };
+    return { text: '📞 Voice', cls: 'ch-voice' };
   }
 
-  // Platform-flagged threads with planning@ in any field
-  if (sub.startsWith('platform')) {
-    return { text: '✉️ Planning@ (planning@belltoweron34th.com)', cls: 'ch-planning' };
+  // For inbound messages, check where they came from
+  if (!isAgent) {
+    // Platform relay emails
+    if (from.includes('member.theknot.com')) return { text: '✉️ TheKnot', cls: 'ch-planning' };
+    if (from.includes('weddingwire.com') || from.includes('reply.weddingwire.com')) return { text: '✉️ WeddingWire', cls: 'ch-planning' };
+    if (from.includes('zola.com')) return { text: '✉️ Zola', cls: 'ch-planning' };
+    // GHL webform reply
+    if (to.includes('mary@venue.belltoweron34th.com') || sub === 'ghl') return { text: '✉️ Webform', cls: 'ch-agentmail' };
+    // Planning@ inbound
+    if (to.includes('planning@belltoweron34th.com') || sub.startsWith('platform')) return { text: '✉️ Platform', cls: 'ch-planning' };
+    // Generic email
+    if (from && from.includes('@')) return { text: '✉️ Email', cls: 'ch-direct' };
   }
 
-  // Direct emails from other addresses — show the actual from address
-  if (from && from.includes('@')) {
-    return { text: `✉️ ${msg.from}`, cls: 'ch-direct' };
-  }
+  // For agent messages without server channel tag, infer from from/to
+  if (from.includes('planning@belltoweron34th.com')) return { text: '✉️ Planning@', cls: 'ch-planning' };
+  if (from.includes('mary@venue.belltoweron34th.com') || sub === 'ghl') return { text: '✉️ AgentMail', cls: 'ch-agentmail' };
+  if (sub.startsWith('platform')) return { text: '✉️ Planning@', cls: 'ch-planning' };
 
-  // Fallback
-  return { text: '✉️ Email', cls: 'ch-direct' };
+  // Fallback for email threads
+  if (src === 'email' || (from && from.includes('@'))) return { text: '✉️ Email', cls: 'ch-direct' };
+
+  return null;
 }
 
 function openFeedback(messageIdx) {
@@ -1034,7 +1032,7 @@ async function submitFeedback() {
   };
 
   try {
-    const res = await fetch('/api/feedback', {
+    const res = await fetch(`${API_BASE}/api/feedback`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
