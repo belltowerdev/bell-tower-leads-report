@@ -4,6 +4,7 @@ import json, os, re, subprocess, urllib.parse, base64, sys
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from pathlib import Path
 
 CT = timezone(timedelta(hours=-5))
@@ -1275,6 +1276,42 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(result, default=str).encode())
     
+    def do_POST(self):
+        """Proxy POST /api/threads/* and /api/feedback* to feedback API (3980)."""
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith('/api/threads/') or parsed.path.startswith('/api/feedback') or parsed.path.startswith('/api/training') or parsed.path.startswith('/api/tools'):
+            import urllib.request as _urllib_req
+            try:
+                content_len = int(self.headers.get('Content-Length', 0))
+                post_body = self.rfile.read(content_len) if content_len > 0 else b''
+                proxy_url = f"http://127.0.0.1:3980{self.path}"
+                proxy_req = _urllib_req.Request(proxy_url, data=post_body, method='POST')
+                proxy_req.add_header('Content-Type', self.headers.get('Content-Type', 'application/json'))
+                with _urllib_req.urlopen(proxy_req, timeout=30) as proxy_resp:
+                    proxy_data = proxy_resp.read()
+                self.send_response(proxy_resp.status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(proxy_data)
+            except Exception as e:
+                self.send_response(502)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': f'Feedback API unavailable: {e}'}).encode())
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests."""
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+    
     def serve_recording(self, call_id):
         """Proxy VAPI recording — fetches presigned URL from VAPI API, streams MP3 to browser"""
         env = load_env()
@@ -1335,6 +1372,8 @@ class Handler(BaseHTTPRequestHandler):
         pass  # Suppress logs
 
 if __name__ == '__main__':
-    server = HTTPServer(('127.0.0.1', 3979), Handler)
-    print("Leads API server running on port 3979")
+    class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+    server = ThreadedHTTPServer(('127.0.0.1', 3979), Handler)
+    print("Leads API server running on port 3979 (threaded)")
     server.serve_forever()

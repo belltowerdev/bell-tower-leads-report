@@ -32,6 +32,7 @@ import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 import urllib.parse
 
 # Paths
@@ -686,7 +687,7 @@ def create_feedback(data):
         
         'context': context,
         
-        'status': 'pending_review',
+        'status': 'approved',
         'applied_to': None,
         'created_by': 'human',
         'created_at': timestamp
@@ -696,6 +697,10 @@ def create_feedback(data):
     fb_path = FEEDBACK_DIR / f"{feedback_id}.json"
     with open(fb_path, 'w') as f:
         json.dump(feedback, f, indent=2)
+    
+    # Auto-approve: add to example bank immediately on submit
+    if feedback.get('corrected_response') and feedback.get('rating') in ('needs_improvement', 'wrong'):
+        add_to_example_bank(feedback)
     
     return feedback
 
@@ -1286,8 +1291,10 @@ class FeedbackHandler(BaseHTTPRequestHandler):
 
 def run_server(port=3980):
     """Run the feedback API server."""
-    server = HTTPServer(('0.0.0.0', port), FeedbackHandler)
-    print(f"Feedback API server running on port {port}")
+    class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+    server = ThreadedHTTPServer(('0.0.0.0', port), FeedbackHandler)
+    print(f"Feedback API server running on port {port} (threaded)")
     server.serve_forever()
 
 
