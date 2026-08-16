@@ -352,6 +352,7 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                     is_vapi_call = 'vapi-call' in tag_source
                     is_agentmail = 'agentmail' in tag_source
                     is_social = 'social' in tag_source or 'facebook' in tag_source
+                    is_sms_stop = 'sms-stop' in tag_source or 'sms_stop' in tag_source
                     # Skip platform relay emails — these are platform leads (TheKnot/WeddingWire/Zola)
                     # that we created GHL records for; they're already counted as Platform leads
                     contact_email = (c.get('email') or '').lower().strip()
@@ -361,8 +362,8 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                     ))
                     is_website = contact_source in ('main website', 'website', 'webform', 'organic', 'organic_direct') or 'contact us' in tag_source
                     
-                    if is_vapi_call or is_agentmail or is_platform_relay or is_social:
-                        continue  # already shown in another channel
+                    if is_vapi_call or is_agentmail or is_platform_relay or is_social or is_sms_stop:
+                        continue  # already shown in another channel, or junk SMS STOP contact
                     
                     # Skip contacts with no source, no tags, no email, AND no phone —
                     # these were created by unknown system processes (social bridge, etc.)
@@ -648,7 +649,20 @@ def get_platform_leads(env, start_ct, end_ct, name_idx=None):
                 })
             except:
                 pass
-    return leads
+    # Dedup: same lead file path = same lead. The webhook logs a "Parsed lead" line
+    # for both the original email and the Gmail push duplicate, but the second one
+    # is deduped by the webhook itself ("Deduped: reply already sent"). Keep only
+    # the first occurrence (which has the complete data including guest count).
+    seen_paths = set()
+    deduped = []
+    for l in leads:
+        key = l.get('contactId', '')  # lead_id from file path basename
+        if key and key in seen_paths:
+            continue
+        if key:
+            seen_paths.add(key)
+        deduped.append(l)
+    return deduped
 
 def extract_name_from_transcript(transcript):
     """Extract caller name from VAPI transcript — Mary asks 'Who do I have the pleasure of speaking with?'"""
