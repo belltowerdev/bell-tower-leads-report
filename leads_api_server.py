@@ -29,7 +29,7 @@ def curl_json(url, headers=None, data=None, method='GET', timeout=15):
 
 def load_env():
     result = subprocess.run(
-        ["bash", "-c", "set -a; source /home/ubuntu/.hermes/secrets/1password.env 2>/dev/null; env"],
+        ["bash", "-c", "set -a; source /home/ubuntu/.hermes/secrets/1password.env.archived 2>/dev/null; env"],
         capture_output=True, text=True
     )
     env = {}
