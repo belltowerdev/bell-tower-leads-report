@@ -83,10 +83,24 @@ def _classify_email_source(filename, thread_data):
 
 
 def _get_vapi_key():
-    """Get Vapi API key from 1password.env."""
-    env_file = HERMES_ROOT / 'secrets' / '1password.env'
+    """Get Vapi API key from 1Password bridge or .env fallback."""
+    # Try environment first (may be loaded by env.sh)
+    key = os.environ.get('VAPI_PRIVATE_KEY', '')
+    if key:
+        return key
+    # Try 1Password credential cache
+    try:
+        import json as _json
+        cache_path = HERMES_ROOT / 'secrets' / '1p-credential-cache.json'
+        if cache_path.exists():
+            cache = _json.loads(cache_path.read_text())
+            return cache.get('credentials', {}).get('VAPI_PRIVATE_KEY', '')
+    except Exception:
+        pass
+    # Fallback: read from archived .env file
+    env_file = HERMES_ROOT / 'secrets' / '1password.env.archived'
     if not env_file.exists():
-        return os.environ.get('VAPI_PRIVATE_KEY', '')
+        return ''
     try:
         with open(env_file) as f:
             for line in f:
@@ -94,9 +108,9 @@ def _get_vapi_key():
                     return line.split('=', 1)[1].strip().strip('"').strip("'")
                 elif line.startswith('VAPI_PRIVATE_KEY='):
                     return line.split('=', 1)[1].strip().strip('"').strip("'")
-        return os.environ.get('VAPI_PRIVATE_KEY', '')
+        return ''
     except Exception:
-        return os.environ.get('VAPI_PRIVATE_KEY', '')
+        return 
 
 
 def _fetch_vapi_transcript(call_id: str) -> str:

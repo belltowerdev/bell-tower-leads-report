@@ -28,15 +28,32 @@ def curl_json(url, headers=None, data=None, method='GET', timeout=15):
         return {}
 
 def load_env():
-    result = subprocess.run(
-        ["bash", "-c", "set -a; source /home/ubuntu/.hermes/secrets/1password.env.archived 2>/dev/null; env"],
-        capture_output=True, text=True
-    )
+    """Load credentials from 1Password cache file first, then .env archive fallback."""
     env = {}
-    for line in result.stdout.strip().split('\n'):
-        if '=' in line:
-            k, v = line.split('=', 1)
-            env[k.strip()] = v.strip()
+    # Try 1Password credential cache first (fast, no subprocess)
+    try:
+        cache_path = '/home/ubuntu/.hermes/secrets/1p-credential-cache.json'
+        with open(cache_path) as f:
+            import json as _json
+            cache = _json.load(f)
+        for k, v in cache.get('credentials', {}).items():
+            env[k] = v
+    except Exception:
+        pass
+    # Load non-secret config + any missing values from the archive .env file
+    try:
+        result = subprocess.run(
+            ["bash", "-c", "set -a; source /home/ubuntu/.hermes/secrets/1password.env.archived 2>/dev/null; env"],
+            capture_output=True, text=True
+        )
+        for line in result.stdout.strip().split('\n'):
+            if '=' in line:
+                k, v = line.split('=', 1)
+                k = k.strip()
+                if k not in env:  # Don't overwrite 1Password values
+                    env[k] = v.strip()
+    except Exception:
+        pass
     return env
 
 def parse_date_range(start_str, end_str):
