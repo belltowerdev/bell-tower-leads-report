@@ -736,7 +736,13 @@ def extract_name_from_transcript(transcript):
                                   'is there ', 'are you ', 'what ', 'when ', 'where ', 'why ',
                                   'i need', 'i have', 'i would', 'we ', 'yeah', 'yes ', 'no ',
                                   'hi ', 'hey ', 'hello', 'um ', 'uh ', 'transfer ', 'just ',
-                                  'sorry', "i'd ", 'could ', 'late ', 'earlier ']
+                                  'sorry', "i'd ", 'could ', 'late ', 'earlier ',
+                                  'can i ', 'i need to', 'i want to', "i'd like", 'i would like',
+                                  'i am calling', 'i was calling', 'please', 'speak to', 'speak with',
+                                  'let me', 'my phone', 'my number', 'my email', 'calling about',
+                                  'calling to', 'calling from', 'need to speak', 'looking for',
+                                  'wondering if', 'wanted to', 'trying to', 'calling because',
+                                  'reaching out', 'following up']
                 if any(name_lower.startswith(s) for s in sentence_starts):
                     continue
                 return name
@@ -912,6 +918,28 @@ def get_vapi_leads(env, start_ct, end_ct):
             try: name = summary.split('name is')[1].split('.')[0].split(',')[0].strip()[:30]
             except: pass
         # Don't use "called the bell tower" pattern — it grabs the summary sentence, not a name
+        # Fallback: check GHL contact for this phone number (PCR/WooSender may have the real name)
+        if not name or name == fmt_phone(phone):
+            try:
+                env_vars = load_env()
+                ghl_token = env_vars.get('GHL_PRIVATE_TOKEN', '')
+                ghl_loc = env_vars.get('GHL_LOCATION_ID', '')
+                if ghl_token and ghl_loc and phone:
+                    phone_digits = re.sub(r'\D', '', phone)
+                    search_body = json.dumps({"locationId": ghl_loc, "filters": [{"field": "phone", "operator": "eq", "value": phone_digits}], "pageLimit": 1, "page": 0})
+                    search_result = curl_json(
+                        "https://services.leadconnectorhq.com/contacts/search",
+                        headers={"Authorization": f"Bearer {ghl_token}", "Accept": "application/json", "Content-Type": "application/json", "Version": "2021-07-28"},
+                        data=search_body, method="POST"
+                    )
+                    contacts = search_result.get('contacts', [])
+                    if contacts:
+                        c = contacts[0]
+                        ghl_name = f"{c.get('firstName','').strip()} {c.get('lastName','').strip()}".strip()
+                        if ghl_name and ghl_name.lower() not in ('test', 'unknown', ''):
+                            name = ghl_name
+            except Exception:
+                pass
         if not name:
             name = fmt_phone(phone) if phone else 'Unknown Caller'
         
