@@ -1073,11 +1073,20 @@ def merge_recent_duplicates(leads, window_minutes=10):
         group.sort(key=lambda x: x['dt'] or datetime.min.replace(tzinfo=timezone.utc))
         base = group[-1]['lead']  # most recent wins
         older = [x['lead'] for x in group[:-1]]
-        # Backfill missing fields from older records
+        # Backfill missing OR junk fields from older records.
+        # VAPI name extraction can produce garbage like "Talk to a real person"
+        # — treat those as empty so the real name from the GHL record wins.
+        _junk_names = {
+            'unknown caller', 'talk to someone', 'talk to a real person',
+            'looking for a quote for an event', 'speak to a person',
+            'speak to someone', 'human', 'real person',
+        }
+        def _is_junk(val):
+            return not val or val.strip().lower() in _junk_names or val.strip().lower().startswith('talk to')
         for field in ('name', 'inquiry', 'notes', 'email', 'eventDetails'):
-            if not base.get(field) and older:
+            if _is_junk(base.get(field)) and older:
                 for old in older:
-                    if old.get(field):
+                    if old.get(field) and not _is_junk(old.get(field)):
                         base[field] = old[field]
                         break
         # Preserve BOTH recording links (first + latest)
@@ -1258,7 +1267,7 @@ class Handler(BaseHTTPRequestHandler):
         # Roger (2026-08-12): cross-channel merge — same phone within 10 min
         # collapses to ONE published row (most recent wins, missing fields
         # backfilled). Future-only by nature: dedup runs on the query window.
-        all_leads = merge_recent_duplicates(all_leads, window_minutes=10)
+        all_leads = merge_recent_duplicates(all_leads, window_minutes=120)
         all_leads.sort(key=lambda x: x.get('timestamp', ''))
         non_leads.sort(key=lambda x: x.get('timestamp', ''))
 
