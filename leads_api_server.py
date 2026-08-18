@@ -390,6 +390,13 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                     if not contact_source and not tags and not contact_email_raw and not contact_phone_raw:
                         continue
                     
+                    # Skip zapier-imported contacts tagged "testing" — backend sync, not leads
+                    # (e.g. SurveyMonkey tasting form → Zapier → GHL creates a contact)
+                    is_zapier_testing = ('testing' in tag_source or 'testing' in tags)
+                    is_zapier_import = any(a.get('medium') == 'zapier' for a in c.get('attributions', []))
+                    if is_zapier_testing and is_zapier_import and not contact_source and not contact_phone_raw and not contact_email_raw:
+                        continue
+                    
                     first_name = (c.get('firstName') or '').strip()
                     last_name = (c.get('lastName') or '').strip()
                     full_name = f"{first_name} {last_name}".strip()
@@ -1063,6 +1070,82 @@ def get_sms_conversations(env, start_ct, end_ct):
         if ts_ct > convos[phone_norm]['last']: convos[phone_norm]['last'] = ts_ct
     return convos
 
+def merge_name_splits(leads, window_minutes=30):
+    """Merge same-person rows split across two GHL records with complementary
+    contact info: one has phone (no email), the other has email (no phone),
+    sharing the same first name and created within a short window.
+
+    This is the GHL workflow double-write: a webform submission creates an
+    SMS first-touch contact (phone + first name only, tag 'ghl-form-sms')
+    AND an email thread (email + full name, no phone). They're the same lead
+    but share no common key, so phone-based dedup misses them.
+    (Jessy Leal / jleal@yettercoleman.com / +17136328000, 2026-08-18.)
+
+    Merge rule: keep the richer row (the one with email = full name + inquiry),
+    backfill the phone from the phone-only row.
+    """
+    if not leads:
+        return leads
+    window = timedelta(minutes=window_minutes)
+
+    def _first_name(name):
+        return (name or '').strip().split()[0].lower() if (name or '').strip() else ''
+
+    def _dt(lead):
+        ts = lead.get('timestamp', '') or ''
+        try:
+            return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        except Exception:
+            return None
+
+    # Group email-only rows and phone-only rows by first name
+    email_rows = {}   # first_name -> list of lead dicts (have email, no phone)
+    phone_rows = {}   # first_name -> list of lead dicts (have phone, no email)
+    for l in leads:
+        if (l.get('email') or '') and not (l.get('phone') or ''):
+            fn = _first_name(l.get('name'))
+            if fn:
+                email_rows.setdefault(fn, []).append(l)
+        elif (l.get('phone') or '') and not (l.get('email') or ''):
+            fn = _first_name(l.get('name'))
+            if fn:
+                phone_rows.setdefault(fn, []).append(l)
+
+    if not email_rows or not phone_rows:
+        return leads
+
+    # For each email-only lead, find a phone-only lead with the same first name
+    # created within the window. Backfill the phone and mark the phone-only
+    # row as consumed (drop it).
+    consumed_ids = set()
+    for fn, emails in email_rows.items():
+        phones = phone_rows.get(fn)
+        if not phones:
+            continue
+        for el in emails:
+            edt = _dt(el)
+            if edt is None:
+                continue
+            for pl in phones:
+                if id(pl) in consumed_ids:
+                    continue
+                pdt = _dt(pl)
+                if pdt is None:
+                    continue
+                if abs((edt - pdt).total_seconds()) <= window.total_seconds():
+                    el['phone'] = pl.get('phone', '')
+                    # If the phone-only row has a contactId and email row doesn't,
+                    # preserve it for the conversation lookup.
+                    if not el.get('contactId') and pl.get('contactId'):
+                        el['contactId'] = pl.get('contactId')
+                    consumed_ids.add(id(pl))
+                    break
+
+    if not consumed_ids:
+        return leads
+    return [l for l in leads if id(l) not in consumed_ids]
+
+
 def merge_recent_duplicates(leads, window_minutes=10):
     """Cross-channel merge/dedup: same normalized phone within N minutes → one row.
 
@@ -1327,6 +1410,7 @@ class Handler(BaseHTTPRequestHandler):
         # collapses to ONE published row (most recent wins, missing fields
         # backfilled). Future-only by nature: dedup runs on the query window.
         all_leads = merge_recent_duplicates(all_leads, window_minutes=120)
+        all_leads = merge_name_splits(all_leads, window_minutes=30)
         all_leads.sort(key=lambda x: x.get('timestamp', ''))
         non_leads.sort(key=lambda x: x.get('timestamp', ''))
 
