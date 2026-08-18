@@ -656,6 +656,7 @@ def format_thread_for_display(thread):
     return {
         'thread_id': thread_id,
         'source': source,
+        '_source': source,  # preserve for voice detection upstream
         'subsource': subsource,
         'status': thread.get('status', 'open'),
         'lead_data': thread.get('lead_data', {}),
