@@ -407,7 +407,16 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                     if not full_name and not has_contact:
                         continue
                     if not full_name and has_contact:
-                        full_name = 'Unknown'
+                        # Fallback: thread may hold the prospect name (e.g. "Florence Keto"
+                        # named in the platform lead but blank in GHL contact fields),
+                        # or GHL may hold the phone display name for phone-labeled contacts.
+                        ec2 = email_idx.get(c.get('email','').strip().lower())
+                        if ec2:
+                            full_name = extract_ghl_inquiry(ec2['thread']) or full_name
+                        if not full_name:
+                            full_name = (c.get('contactName') or '').strip()
+                        if not full_name:
+                            full_name = 'Unknown'
                     if is_non_bridal and not is_bridal:
                         lead_type = 'Non-Bridal'
                     elif is_bridal:
@@ -623,6 +632,10 @@ def get_platform_leads(env, start_ct, end_ct, name_idx=None):
                     if rec:
                         ld = rec['thread'].get('lead_data') or {}
                         pm = ld.get('prospect_message', '') or ''
+                        # Fallback: thread lead_data may hold the prospect name even when
+                        # the platform webhook log carried none (platform leads w/o name on the log line).
+                        if not name:
+                            name = ld.get('prospect_name', '') or (pm.split(' from ', 1)[0].strip() if pm else '')
                         if pm:
                             inquiry = pm[:300]
                         replied = rec['replied']
