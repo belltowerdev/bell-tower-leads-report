@@ -390,11 +390,16 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                     if not contact_source and not tags and not contact_email_raw and not contact_phone_raw:
                         continue
                     
-                    # Skip zapier-imported contacts tagged "testing" — backend sync, not leads
-                    # (e.g. SurveyMonkey tasting form → Zapier → GHL creates a contact)
-                    is_zapier_testing = ('testing' in tag_source or 'testing' in tags)
-                    is_zapier_import = any(a.get('medium') == 'zapier' for a in c.get('attributions', []))
-                    if is_zapier_testing and is_zapier_import and not contact_source and not contact_phone_raw and not contact_email_raw:
+                    # Skip contacts tagged "testing" — test records, not real leads
+                    # (e.g. Zapier test submissions, SurveyMonkey tasting-form tests).
+                    # 2026-08-23 fix: the original filter required BOTH a "testing"
+                    # tag AND zapier attribution AND no email/phone/source, which let
+                    # test records like Cahlyn Velasco (email present, tags=['testing'])
+                    # slip through as "responded". The contacts/search endpoint returns
+                    # `tags` but not `attributions`, so "testing" is the only reliable
+                    # signal here — and it's unambiguous (exact-match on the tag).
+                    is_testing = any((t or '').strip().lower() == 'testing' for t in tags)
+                    if is_testing:
                         continue
                     
                     first_name = (c.get('firstName') or '').strip()
@@ -1347,6 +1352,56 @@ def enrich_with_sms(leads, convos):
             lead['conversationStatus'] = ""
     return leads
 
+def finalize_ghl_first_touch(leads, email_idx, convos):
+    """Make GHL Webform status/notes honest (2026-08-23).
+
+    The GHL contact loops previously stamped every contact carrying an email or
+    phone as 'responded — First-touch sent (email + SMS)' — a hardcoded claim,
+    not evidence. That's why Mel (SMS bounced off a landline) and Cahlyn (Zapier
+    test record) both showed green "responded" with nothing actually sent.
+
+    This recomputes reality from the email thread files (email_idx: does an
+    outbound email exist?) and the Twilio message log (convos: was an outbound
+    SMS attempted?) and sets status/notes accordingly. Introduces a
+    'needs_response' status when nothing actually went out.
+    """
+    for lead in leads:
+        if lead.get('channel') != 'GHL Webform':
+            continue
+        email = (lead.get('email') or '').strip().lower()
+        phone_digits = re.sub(r'\D', '', lead.get('phone') or '')
+        has_phone = bool(lead.get('phone'))
+
+        email_sent = False
+        if email and email_idx.get(email) and email_idx[email].get('first_out'):
+            email_sent = True
+        sms_sent = False
+        if phone_digits and phone_digits in convos and convos[phone_digits].get('out', 0) > 0:
+            sms_sent = True
+
+        if email_sent and sms_sent:
+            note = 'Email + SMS sent'
+        elif email_sent and has_phone:
+            note = 'Email sent; SMS not confirmed'
+        elif email_sent:
+            note = 'Email sent (no phone on file)'
+        elif sms_sent:
+            note = 'SMS sent (email not confirmed)'
+        else:
+            note = 'No first-touch sent'
+
+        if lead.get('prospectReplied'):
+            lead['status'] = 'active'
+            note += ', prospect replied'
+        elif email_sent or sms_sent:
+            lead['status'] = 'responded'
+            note += ', awaiting reply'
+        else:
+            lead['status'] = 'needs_response'
+        lead['notes'] = note
+    return leads
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1424,6 +1479,7 @@ class Handler(BaseHTTPRequestHandler):
         # backfilled). Future-only by nature: dedup runs on the query window.
         all_leads = merge_recent_duplicates(all_leads, window_minutes=120)
         all_leads = merge_name_splits(all_leads, window_minutes=30)
+        all_leads = finalize_ghl_first_touch(all_leads, email_idx, convos)
         all_leads.sort(key=lambda x: x.get('timestamp', ''))
         non_leads.sort(key=lambda x: x.get('timestamp', ''))
 

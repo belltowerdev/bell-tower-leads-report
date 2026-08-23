@@ -625,6 +625,7 @@ function statusBadge(status) {
   if (status === 'awaiting') return '<span class="badge badge-awaiting">Awaiting Reply</span>';
   if (status === 'spam') return '<span class="badge badge-spam">No Contact Info</span>';
   if (status === 'responded') return '<span class="badge badge-responded">Responded</span>';
+  if (status === 'needs_response') return '<span class="badge badge-missed">Needs Response</span>';
   return '';
 }
 
