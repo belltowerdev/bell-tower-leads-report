@@ -602,6 +602,17 @@ function fmtDate(iso) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' });
 }
 
+function fmtPreferredDates(str) {
+  if (!str) return '—';
+  // Reformat ISO dates (YYYY-MM-DD) to "Month Day, Year". Ranges like
+  // "2026-08-21 - 2026-08-28" become "August 21, 2026 - August 28, 2026".
+  // Non-date values (weekdays like "Mon-Wed", or "Fall 2026") pass through.
+  return String(str).replace(/(\d{4})-(\d{2})-(\d{2})/g, (m, y, mo, d) => {
+    const dt = new Date(Date.UTC(parseInt(y, 10), parseInt(mo, 10) - 1, parseInt(d, 10)));
+    return dt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+  });
+}
+
 function channelBadge(channel) {
   if (channel === 'GHL Webform') return '<span class="badge badge-ghl">GHL Webform</span>';
   if (channel === 'WeddingWire') return '<span class="badge badge-platform">WeddingWire</span>';
@@ -841,10 +852,18 @@ function renderTable(rows, columns, clickable) {
         else val = `<span class="speed-na">—</span>`;
       }
       else if (col === 'prospect') {
-        // Prospect / Phone combined: name if present, else formatted phone
-        const p = row.prospect || row.name || row.phone || '';
-        if (p && /^\+?\d/.test(p)) val = `<span class="phone">${fmtPhone(p)}</span>`;
-        else val = `<span class="phone">${p || '—'}</span>`;
+        // Name + phone together (Roger: show the phone number next to the prospect name)
+        const nm = row.name || '';
+        const ph = row.phone ? fmtPhone(row.phone) : '';
+        const email = (row.prospect && String(row.prospect).includes('@')) ? row.prospect : '';
+        const parts = [];
+        if (nm) parts.push(nm);
+        if (ph) parts.push(`<span class="phone">${ph}</span>`);
+        if (!nm && !ph) {
+          if (email) parts.push(`<span class="phone">${email}</span>`);
+          else if (row.prospect) parts.push(`<span class="phone">${row.prospect}</span>`);
+        }
+        val = parts.length ? parts.join(' · ') : '—';
       }
       else if (col === 'status') {
         const st = (row.status || '').toLowerCase();
@@ -852,7 +871,7 @@ function renderTable(rows, columns, clickable) {
         else if (st === 'created') val = '<span class="badge badge-awaiting">Created</span>';
         else val = row.status || '—';
       }
-      else if (col === 'preferred') val = row.preferred || '—';
+      else if (col === 'preferred') val = fmtPreferredDates(row.preferred);
       else val = row[col] || '—';
       html += `<td>${val}</td>`;
     });
