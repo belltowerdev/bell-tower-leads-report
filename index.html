@@ -1290,7 +1290,7 @@ async function sendDispatch() {
   btn.textContent = 'Sending...';
 
   try {
-    const resp = await fetch(`${API_BASE}/api/dispatch`, {
+    const resp = await fetch('https://dashboard.belltoweron34th.com/api/dispatch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: message })
