@@ -1500,10 +1500,205 @@ def finalize_ghl_first_touch(leads, email_idx, convos):
     return leads
 
 
+# ── Communication thread endpoint ────────────────────────────────────────
+# Fetches Vapi voice transcripts + Twilio SMS for a phone number
+# and returns a unified chronological timeline.
+
+def fetch_vapi_comm_history(phone, env):
+    """Fetch Vapi call transcripts + SMS sessions for a phone.
+    Returns list of {id, timestamp, channel, direction, body, source}."""
+    entries = []
+    vapi_key = env.get('VAPI_PRIVATE_KEY', '')
+    if not vapi_key:
+        return entries
+
+    phone_digits = re.sub(r'\D', '', phone or '')
+    if len(phone_digits) < 10:
+        return entries
+    last4 = phone_digits[-4:]
+
+    # Fetch recent calls (14 days back, limit 200)
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    url = f"https://api.vapi.ai/call?createdAtGe={week_ago}&limit=200"
+    data = curl_json(url, headers={"Authorization": f"Bearer {vapi_key}"})
+    calls = data if isinstance(data, list) else data.get('calls', data.get('data', []))
+
+    for c in calls:
+        customer = c.get('customer', {}) if isinstance(c.get('customer'), dict) else {}
+        cust_number = customer.get('number', '')
+        cust_digits = re.sub(r'\D', '', cust_number)
+        # Match by last 4 digits (Vapi may mask numbers)
+        if not cust_digits or not cust_digits.endswith(last4):
+            continue
+
+        call_id = c.get('id', '')
+        started_at = c.get('startedAt', '')
+        summary = c.get('summary', '') or ''
+        transcript_str = c.get('transcript', '')
+
+        # Voice transcript entries
+        if isinstance(transcript_str, str) and transcript_str.strip():
+            parts = re.split(r'\n?(AI|User|Assistant|Customer):\s*', transcript_str)
+            for i in range(1, len(parts) - 1, 2):
+                speaker = parts[i]
+                text = (parts[i + 1] or '').strip()
+                if not text:
+                    continue
+                is_agent = speaker in ('AI', 'Assistant')
+                entries.append({
+                    'id': f'vapi-{call_id}-{i}',
+                    'timestamp': started_at,
+                    'channel': 'voice',
+                    'direction': 'outbound' if is_agent else 'inbound',
+                    'body': text,
+                    'source': 'vapi',
+                })
+
+        # Call summary as a single entry if no transcript
+        if not transcript_str and summary:
+            entries.append({
+                'id': f'vapi-summary-{call_id}',
+                'timestamp': started_at,
+                'channel': 'voice',
+                'direction': 'unknown',
+                'body': f'[Call Summary] {summary}',
+                'source': 'vapi',
+            })
+
+    # Fetch Vapi SMS sessions
+    sms_url = "https://api.vapi.ai/session?limit=200"
+    sms_data = curl_json(sms_url, headers={"Authorization": f"Bearer {vapi_key}"})
+    sessions = sms_data if isinstance(sms_data, list) else sms_data.get('sessions', sms_data.get('data', []))
+    for s in sessions:
+        cust = s.get('customer', {}) if isinstance(s.get('customer'), dict) else {}
+        sess_number = cust.get('number', '')
+        sess_digits = re.sub(r'\D', '', sess_number)
+        if not sess_digits or not sess_digits.endswith(last4):
+            continue
+        sid = s.get('id', '')
+        sess_type = s.get('type', '')
+        if sess_type != 'sms':
+            continue
+        # Get session messages
+        msgs = s.get('messages', [])
+        if not isinstance(msgs, list):
+            continue
+        for idx, m in enumerate(msgs):
+            direction = m.get('direction', '')
+            body = m.get('body', m.get('text', m.get('content', '')))
+            if not body:
+                continue
+            entries.append({
+                'id': f'vapi-sms-{sid}-{idx}',
+                'timestamp': m.get('timestamp', s.get('createdAt', '')),
+                'channel': 'sms',
+                'direction': direction or 'unknown',
+                'body': body,
+                'source': 'vapi',
+            })
+
+    return entries
+
+
+def fetch_twilio_sms_history(phone, env):
+    """Fetch Twilio SMS messages for a phone via the Messages API.
+    Returns list of {id, timestamp, channel, direction, body, source}."""
+    entries = []
+    sid = env.get('TWILIO_ACCOUNT_SID', '')
+    token = env.get('TWILIO_AUTH_TOKEN', '')
+    if not sid or not token:
+        return entries
+
+    auth = base64.b64encode(f"{sid}:{token}".encode()).decode().strip()
+    phone_encoded = phone.replace('+', '%2B')
+    phone_digits = re.sub(r'\D', '', phone or '')
+
+    # Fetch both directions
+    urls = []
+    if phone_encoded:
+        urls.append(f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json?PageSize=200&To={phone_encoded}")
+        urls.append(f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json?PageSize=200&From={phone_encoded}")
+
+    seen = set()
+    for url in urls:
+        data = curl_json(url, headers={"Authorization": f"Basic {auth}"})
+        for m in data.get('messages', []):
+            msg_sid = m.get('sid', '')
+            if msg_sid in seen:
+                continue
+            seen.add(msg_sid)
+
+            direction = m.get('direction', '')
+            body = m.get('body', '')
+            date_sent = m.get('date_sent', m.get('date_created', ''))
+            if date_sent:
+                try:
+                    ts = parsedate_to_datetime(date_sent).isoformat()
+                except:
+                    ts = date_sent
+            else:
+                ts = ''
+
+            entries.append({
+                'id': f'twilio-{msg_sid}',
+                'timestamp': ts,
+                'channel': 'sms',
+                'direction': direction,
+                'body': body,
+                'source': 'twilio',
+            })
+
+    # Dedupe by body prefix + timestamp
+    deduped = []
+    bodies_seen = set()
+    for e in sorted(entries, key=lambda x: x.get('timestamp', ''), reverse=True):
+        key = f"{e.get('timestamp', '')}|{e.get('body', '')[:80]}"
+        if key in bodies_seen:
+            continue
+        bodies_seen.add(key)
+        deduped.append(e)
+
+    return deduped
+
+
+def get_communications(phone, env):
+    """Fetch unified communication history for a phone: Vapi + Twilio, merged chronologically."""
+    vapi_entries = fetch_vapi_comm_history(phone, env)
+    twilio_entries = fetch_twilio_sms_history(phone, env)
+
+    # Merge: keep Vapi entries, add Twilio entries not already covered
+    combined = list(vapi_entries)
+    vapi_ids = {e.get('id', '') for e in vapi_entries}
+    vapi_bodies = {(e.get('timestamp', ''), e.get('body', '')[:80]) for e in vapi_entries}
+
+    for t in twilio_entries:
+        tid = t.get('id', '')
+        if tid in vapi_ids:
+            continue
+        tkey = (t.get('timestamp', ''), t.get('body', '')[:80])
+        if tkey in vapi_bodies:
+            continue
+        combined.append(t)
+
+    # Sort newest first
+    combined.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+    return {
+        'communications': combined,
+        'phone': phone,
+        'total': len(combined),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
+        
+        # Communications endpoint: Vapi transcripts + Twilio SMS for a phone
+        if parsed.path == '/api/communications':
+            self.handle_communications(params)
+            return
         
         # Recording proxy endpoint
         if parsed.path.startswith('/api/recording/'):
@@ -1655,6 +1850,35 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
+    
+    def handle_communications(self, params):
+        """GET /api/communications?phone=XXXXXXXXXX
+        Fetch merged Vapi transcript + Twilio SMS history for a phone number."""
+        phone = (params.get('phone') or [''])[0].strip()
+        if not phone:
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'phone parameter required'}).encode())
+            return
+
+        env = load_env()
+        try:
+            result = get_communications(phone, env)
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': str(e)}).encode())
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(result, default=str).encode())
     
     def serve_recording(self, call_id):
         """Proxy VAPI recording — fetches presigned URL from VAPI API, streams MP3 to browser"""

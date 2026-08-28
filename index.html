@@ -1085,45 +1085,81 @@ function openLeadThread(rowIdx, evt) {
 
   document.getElementById('threadModal').classList.add('show');
   document.getElementById('modalName').textContent = lead.name || lead.phone || 'Unknown';
-  // Channel resolved after fetch — set placeholder here, refine in then()
-  document.getElementById('modalMeta').textContent = 'Loading channel…';
+  document.getElementById('modalMeta').textContent = 'Loading...';
   document.getElementById('modalChat').innerHTML = '<div class="modal-loading">Loading conversation...</div>';
   document.getElementById('modalStatus').innerHTML = '';
   document.getElementById('feedbackPanel').classList.remove('show');
   currentThread = null;
 
+  // Extract clean phone digits for communications lookup
+  const phoneDigits = (lead.phone || '').replace(/\D/g, '');
+
+  // Fetch thread from feedback server
   const qs = new URLSearchParams();
   if (lead.email) qs.set('email', lead.email);
   if (lead.phone) qs.set('phone', lead.phone);
   if (lead.name) qs.set('name', lead.name);
   if (lead.timestamp) qs.set('timestamp', lead.timestamp);
 
-  fetch(`${API_BASE}/api/threads/find?${qs.toString()}`)
-    .then(r => r.json())
-    .then(data => {
-      if (data.found && data.thread) {
-        currentThread = data.thread;
-        const merged = data.thread.merged_channels ? ' · email + SMS' : '';
+  const threadPromise = fetch(API_BASE + '/api/threads/find?' + qs.toString())
+    .then(function(r) { return r.json(); })
+    .catch(function(err) { return { found: false, error: err.message }; });
+
+  // Fetch communications (Vapi + Twilio)
+  const commsPromise = phoneDigits.length >= 10
+    ? fetch(API_BASE + '/api/communications?phone=' + phoneDigits)
+        .then(function(r) { return r.json(); })
+        .catch(function(err) { return { communications: [], error: err.message }; })
+    : Promise.resolve({ communications: [] });
+
+  // Wait for both, then merge
+  Promise.all([threadPromise, commsPromise])
+    .then(function(results) {
+      var threadData = results[0];
+      var commsData = results[1];
+      var foundThread = threadData.found && threadData.thread;
+      var comms = commsData.communications || [];
+
+      if (foundThread) {
+        currentThread = threadData.thread;
+
+        // Merge comms messages into the thread view
+        if (comms.length > 0) {
+          currentThread = mergeCommsIntoThread(currentThread, comms);
+        }
+
+        var merged = currentThread.merged_channels ? ' . email + SMS' : '';
+        var commsLabel = comms.length > 0 ? ' . ' + comms.length + ' comm items' : '';
         document.getElementById('modalStatus').innerHTML =
-          `<span class="ok">✓ Conversation found${merged}</span>`;
-        // Header meta: channel + phone + email
-        const t = data.thread;
-        const chLabel = threadChannelName(t);
+          '<span class="ok">\u2713 Conversation found' + merged + commsLabel + '</span>';
+
+        var t = currentThread;
+        var chLabel = threadChannelName(t);
         document.getElementById('modalMeta').textContent =
-          (chLabel ? chLabel + ' · ' : '') +
-          (t.customer_phone ? fmtPhone(t.customer_phone) + ' · ' : '') +
+          (chLabel ? chLabel + ' . ' : '') +
+          (t.customer_phone ? fmtPhone(t.customer_phone) + ' . ' : '') +
           (t.customer_email || '');
-        renderThreadViewer(data.thread);
+
+        renderThreadViewer(currentThread);
+      } else if (comms.length > 0) {
+        // No stored thread, but we have Vapi/Twilio comms - build a synthetic thread
+        currentThread = buildCommsThread(lead, comms);
+        document.getElementById('modalStatus').innerHTML =
+          '<span class="ok">\u2713 ' + comms.length + ' communication items found</span>';
+        document.getElementById('modalMeta').textContent =
+          (lead.phone ? fmtPhone(lead.phone) + ' . ' : '') +
+          (lead.email || '');
+        renderThreadViewer(currentThread);
       } else {
         currentThread = null;
         document.getElementById('modalStatus').innerHTML =
-          `<span class="miss">No stored conversation for this lead</span>`;
+          '<span class="miss">No stored conversation for this lead</span>';
         document.getElementById('modalChat').innerHTML =
-          '<div class="modal-empty">No conversation thread found for this lead yet.<br><br>If this is a recent lead, the thread may not have been captured.</div>';
+          '<div class="modal-empty">No conversation thread or communication history found for this lead yet.<br><br>If this is a recent lead, data may not be available yet.</div>';
       }
     })
-    .catch(err => {
-      document.getElementById('modalStatus').innerHTML = `<span class="miss">Error loading conversation</span>`;
+    .catch(function(err) {
+      document.getElementById('modalStatus').innerHTML = '<span class="miss">Error loading conversation</span>';
       document.getElementById('modalChat').innerHTML =
         '<div class="modal-empty">Error loading conversation: ' + escapeHtml(err.message) + '</div>';
     });
@@ -1134,6 +1170,75 @@ function closeThreadModal() {
   currentThread = null;
   currentMessageIdx = null;
   document.getElementById('feedbackPanel').classList.remove('show');
+}
+
+// ── Communication merge helpers ───────────────────────────────────────
+
+function mergeCommsIntoThread(thread, comms) {
+  // Convert comms entries to the thread message format and merge
+  var commsMsgs = comms.map(function(c, i) {
+    var isAgent = c.direction === 'outbound';
+    var ch = c.channel === 'voice' ? 'voice' : 'sms';
+    return {
+      role: isAgent ? 'agent' : 'customer',
+      text: c.body,
+      timestamp: c.timestamp,
+      direction: c.direction,
+      channel: ch,
+      source: c.source,
+      _fromComms: true
+    };
+  });
+
+  // Combine, dedupe by timestamp+body, sort newest first
+  var all = (thread.messages || []).concat(commsMsgs);
+  var seen = {};
+  var deduped = [];
+  for (var i = 0; i < all.length; i++) {
+    var m = all[i];
+    var key = (m.timestamp || '') + '|' + (m.text || '').slice(0, 80);
+    if (seen[key]) continue;
+    seen[key] = true;
+    deduped.push(m);
+  }
+  deduped.sort(function(a, b) {
+    return (b.timestamp || '').localeCompare(a.timestamp || '');
+  });
+  thread.messages = deduped;
+  thread.merged_channels = true;
+  return thread;
+}
+
+function buildCommsThread(lead, comms) {
+  // Build a synthetic thread from pure Vapi/Twilio communications
+  var msgs = comms.map(function(c, i) {
+    var isAgent = c.direction === 'outbound';
+    var ch = c.channel === 'voice' ? 'voice' : 'sms';
+    return {
+      role: isAgent ? 'agent' : 'customer',
+      text: c.body,
+      timestamp: c.timestamp,
+      direction: c.direction,
+      channel: ch,
+      source: c.source,
+      idx: i,
+      has_feedback: false
+    };
+  });
+  msgs.sort(function(a, b) {
+    return (b.timestamp || '').localeCompare(a.timestamp || '');
+  });
+  return {
+    thread_id: 'comms-' + (lead.phone || '').replace(/\D/g, ''),
+    source: 'communications',
+    subsource: '',
+    customer_name: lead.name || '',
+    customer_phone: lead.phone || '',
+    customer_email: lead.email || '',
+    messages: msgs,
+    merged_channels: false,
+    call_summary: ''
+  };
 }
 
 function renderThreadViewer(thread) {
@@ -1175,10 +1280,11 @@ function renderThreadViewer(thread) {
 
 // Friendly channel name for a whole thread (used in modal header)
 function threadChannelName(thread) {
-  const src = String(thread.source || '').toLowerCase();
-  const sub = String(thread.subsource || '').toLowerCase();
+  var src = String(thread.source || '').toLowerCase();
+  var sub = String(thread.subsource || '').toLowerCase();
   if (src === 'sms' || sub === 'inbound_sms' || sub === 'post_call_sms') return 'Twilio SMS';
   if (src === 'voice' || sub === 'vapi_call') return 'Voice';
+  if (src === 'communications') return 'Voice + SMS';
   if (sub === 'ghl') return 'AgentMail';
   if (sub.startsWith('platform')) return 'Planning@';
   if (src === 'email') return 'Email';
@@ -1189,11 +1295,12 @@ function threadChannelName(thread) {
 function messageChannelLabel(msg, thread) {
   // Server-tagged channel (cross-channel merged view) — highest authority
   if (msg.channel) {
-    const ch = String(msg.channel).toLowerCase();
+    var ch = String(msg.channel).toLowerCase();
     if (ch === 'agentmail') return { text: '✉️ AgentMail', cls: 'ch-agentmail' };
     if (ch === 'planning') return { text: '✉️ Planning@', cls: 'ch-planning' };
     if (ch === 'sms') return { text: '📱 SMS', cls: 'ch-sms' };
     if (ch === 'voice') return { text: '📞 Voice', cls: 'ch-voice' };
+    if (ch === 'vapi_transcript') return { text: '📞 Voice', cls: 'ch-voice' };
     return { text: '✉️ Email', cls: 'ch-direct' };
   }
 
