@@ -9,7 +9,7 @@
     { "source": "/api/training/:path", "destination": "https://webhooks.bell34hooks.com/api/training/:path" },
     { "source": "/api/tools/:path", "destination": "https://webhooks.bell34hooks.com/api/tools/:path" },
     { "source": "/api/health", "destination": "https://webhooks.bell34hooks.com/api/health" },
-    { "source": "/api/dispatch", "destination": "https://webhooks.bell34hooks.com/api/dispatch" },
+    { "source": "/api/dispatch", "destination": "https://dashboard.belltoweron34th.com/api/dispatch" },
     { "source": "/conversations", "destination": "/conversations.html" },
     { "source": "/training", "destination": "/training.html" }
   ]
