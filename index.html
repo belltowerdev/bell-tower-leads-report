@@ -438,7 +438,87 @@
   }
   #searchInput:focus { border-color: var(--gold); }
   #searchInput::placeholder { color: #bbb; }
-</style>
+    /* Dispatch bar */
+    .dispatch-bar {
+      background: var(--card-bg);
+      padding: 20px 40px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .dispatch-bar label {
+      font-weight: 600;
+      color: var(--dark);
+      font-size: 14px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .dispatch-input {
+      flex: 1;
+      font-family: 'Source Sans Pro', sans-serif;
+      font-size: 15px;
+      padding: 10px 16px;
+      border: 2px solid var(--border);
+      border-radius: 8px;
+      color: var(--dark);
+      background: var(--white);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .dispatch-input:focus { border-color: var(--gold); }
+    .dispatch-input:disabled { background: #f5f5f5; color: #999; }
+    .dispatch-btn {
+      background: var(--gold);
+      color: var(--white);
+      border: none;
+      padding: 12px 28px;
+      border-radius: 300px;
+      font-family: 'Source Sans Pro', sans-serif;
+      font-size: 15px;
+      letter-spacing: 1px;
+      text-transform: capitalize;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+    .dispatch-btn:hover { background: var(--gold-light); }
+    .dispatch-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Toast notifications */
+    .toast-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 2000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .toast {
+      padding: 14px 24px;
+      border-radius: 8px;
+      font-family: 'Source Sans Pro', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--white);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+      animation: toastIn 0.3s ease-out;
+      max-width: 420px;
+      line-height: 1.4;
+    }
+    .toast-success { background: var(--green); }
+    .toast-error { background: var(--red); }
+    .toast-info { background: var(--dark); }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(60px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes toastOut {
+      from { opacity: 1; transform: translateX(0); }
+      to { opacity: 0; transform: translateX(60px); }
+    }
+  </style>
 </head>
 <body>
 
@@ -463,11 +543,19 @@
     <button class="quick-btn" onclick="setRange('30d')">Last 30 Days</button>
   </div>
   <div class="search-wrap">
-    <input type="text" id="searchInput" placeholder="Search name or phone..." oninput="filterLeads()">
+      <input type="text" id="searchInput" placeholder="Search name or phone..." oninput="filterLeads()">
+    </div>
   </div>
-</div>
 
-<div class="summary-bar" id="summaryBar" style="display:none;">
+  <div class="dispatch-bar">
+    <label>Message Mary</label>
+    <input type="text" id="dispatchInput" class="dispatch-input" placeholder="Type a message to send to Mary..." maxlength="2000">
+    <button class="dispatch-btn" id="dispatchBtn" onclick="sendDispatch()">Send</button>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <div class="summary-bar" id="summaryBar" style="display:none;">
   <div class="summary-card"><div class="num" id="sumTotal">0</div><div class="label">Total Leads</div></div>
   <div class="summary-card green"><div class="num" id="sumSent">0</div><div class="label">Sent</div></div>
   <div class="summary-card gold"><div class="num" id="sumReplies">0</div><div class="label">Replies</div></div>
@@ -1180,6 +1268,70 @@ function copyId(id, el) {
     el.classList.add('copied'); el.textContent = '✓ Copied';
     setTimeout(() => { el.classList.remove('copied'); el.textContent = id.substring(0,12) + (id.length > 12 ? '…' : ''); }, 1500);
   });
+}
+
+// ── Dispatch: Send message to Mary ─────────────────────────────
+let dispatchSending = false;
+
+async function sendDispatch() {
+  const input = document.getElementById('dispatchInput');
+  const btn = document.getElementById('dispatchBtn');
+  const message = input.value.trim();
+
+  if (!message) {
+    showToast('Please type a message first.', 'info');
+    return;
+  }
+
+  if (dispatchSending) return;
+  dispatchSending = true;
+  btn.disabled = true;
+  input.disabled = true;
+  btn.textContent = 'Sending...';
+
+  try {
+    const resp = await fetch(`${API_BASE}/api/dispatch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: message })
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(body || `Server returned ${resp.status}`);
+    }
+
+    showToast('Message sent to Mary.', 'success');
+    input.value = '';
+  } catch (err) {
+    showToast('Failed to send: ' + err.message, 'error');
+  } finally {
+    dispatchSending = false;
+    btn.disabled = false;
+    input.disabled = false;
+    btn.textContent = 'Send';
+    input.focus();
+  }
+}
+
+// Allow Enter key to trigger send (element already in DOM — script is at bottom of body)
+document.getElementById('dispatchInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') sendDispatch();
+});
+
+function showToast(text, type) {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = 'toast toast-' + type;
+  toast.textContent = text;
+  container.appendChild(toast);
+
+  setTimeout(function() {
+    toast.style.animation = 'toastOut 0.3s ease-in forwards';
+    toast.addEventListener('animationend', function() {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    });
+  }, 4000);
 }
 
 // Helpers
