@@ -227,6 +227,20 @@
   .reminder-card.gold .num { color: var(--gold); }
   .reminder-card .label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--body); margin-top: 4px; }
   .phone { font-weight: 600; color: var(--dark); white-space: nowrap; }
+  /* Sortable table headers */
+  .sortable-th {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s;
+  }
+  .sortable-th:hover { color: var(--gold-light); }
+  /* Responsive: horizontal scroll on narrow screens for wide tables */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  @media (max-width: 768px) {
+    .content { padding: 16px 12px; }
+    table { font-size: 13px; }
+    thead th, tbody td { padding: 8px 6px; }
+  }
   .notes { font-size: 13px; color: var(--body); max-width: 320px; }
   .notes.active { font-weight: 600; color: var(--green); }
   .time { color: #888; white-space: nowrap; font-size: 13px; }
@@ -834,7 +848,7 @@ function renderReport(data) {
     html += '<div class="reminder-card gold"><div class="num">' + (summary.reminders.sent || 0) + '</div><div class="label">Sent</div></div>';
     html += '</div>';
     if (summary.reminders.rows && summary.reminders.rows.length > 0) {
-      html += renderTable(summary.reminders.rows, ['prospect', 'preferred', 'status', 'time']);
+      html += renderTable(summary.reminders.rows, ['reminderName', 'reminderPhone', 'preferred', 'status', 'time'], false, true);
     } else {
       html += '<div class="empty" style="padding:20px;">No reminders in this window.</div>';
     }
@@ -843,20 +857,51 @@ function renderReport(data) {
   content.innerHTML = html;
 }
 
-function renderTable(rows, columns, clickable) {
+function renderTable(rows, columns, clickable, sortable) {
   const headers = {
     name: 'Name', channel: 'Channel', phone: 'Phone', time: 'Time',
     type: 'Type', notes: 'Notes', eventDetails: 'Event Details',
     speed: 'Speed', conv: 'Conversation / Notes', inquiry: 'Inquiry', smsSent: 'SMS',
     category: 'Category', details: 'Event Details / Inquiry',
-    prospect: 'Prospect / Phone', preferred: 'Preferred Days', status: 'Status'
+    prospect: 'Prospect / Phone', preferred: 'Preferred Days', status: 'Status', reminderName: 'Name', reminderPhone: 'Phone'
   };
 
+  // Sort state (closure for sortable tables)
+  if (!renderTable._sortState) renderTable._sortState = {};
+  if (!sortable) renderTable._sortState = {};
+
+  let sortedRows = [...rows];
+    const sortKey = renderTable._sortState.key;
+    if (sortable && sortKey) {
+      const dir = renderTable._sortState.dir || 'asc';
+      // Map column keys to data field keys for sorting
+      const dataKeyMap = { reminderName: 'name', reminderPhone: 'phone' };
+      const dataKey = dataKeyMap[sortKey] || sortKey;
+      sortedRows.sort((a, b) => {
+        let va = (a[dataKey] || ''), vb = (b[dataKey] || '');
+      if (sortKey === 'phone' || sortKey === 'reminderPhone') {
+        va = String(va).replace(/\D/g, ''); vb = String(vb).replace(/\D/g, '');
+      }
+      va = String(va).toLowerCase(); vb = String(vb).toLowerCase();
+      if (va < vb) return dir === 'asc' ? -1 : 1;
+      if (va > vb) return dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+
   let html = '<table><thead><tr>';
-  columns.forEach(col => html += `<th>${headers[col]}</th>`);
+  columns.forEach(col => {
+    if (sortable) {
+      const sd = renderTable._sortState.key === col ? (renderTable._sortState.dir || 'asc') : '';
+      const arrow = sd === 'asc' ? ' ▴' : sd === 'desc' ? ' ▾' : '';
+      html += `<th class="sortable-th" onclick="renderTable._sortKey('${col}')">${headers[col]}${arrow}</th>`;
+    } else {
+      html += `<th>${headers[col]}</th>`;
+    }
+  });
   html += '</tr></thead><tbody>';
 
-    rows.forEach((row, i) => {
+    sortedRows.forEach((row, i) => {
     let rowIdx = -1;
     if (clickable) {
       rowIdx = window.__leadRows.length;
@@ -940,19 +985,23 @@ function renderTable(rows, columns, clickable) {
         else val = `<span class="speed-na">—</span>`;
       }
       else if (col === 'prospect') {
-        // Name + phone together (Roger: show the phone number next to the prospect name)
-        const nm = row.name || '';
-        const ph = row.phone ? fmtPhone(row.phone) : '';
-        const email = (row.prospect && String(row.prospect).includes('@')) ? row.prospect : '';
-        const parts = [];
-        if (nm) parts.push(nm);
-        if (ph) parts.push(`<span class="phone">${ph}</span>`);
-        if (!nm && !ph) {
-          if (email) parts.push(`<span class="phone">${email}</span>`);
-          else if (row.prospect) parts.push(`<span class="phone">${row.prospect}</span>`);
-        }
-        val = parts.length ? parts.join(' · ') : '—';
-      }
+              // Name + phone together (Roger: show the phone number next to the prospect name)
+              const nm = row.name || '';
+              const ph = row.phone ? fmtPhone(row.phone) : '';
+              const email = (row.prospect && String(row.prospect).includes('@')) ? row.prospect : '';
+              const parts = [];
+              if (nm) parts.push(nm);
+              if (ph) parts.push(`<span class="phone">${ph}</span>`);
+              if (!nm && !ph) {
+                if (email) parts.push(`<span class="phone">${email}</span>`);
+                else if (row.prospect) parts.push(`<span class="phone">${row.prospect}</span>`);
+              }
+              val = parts.length ? parts.join(' · ') : '—';
+            }
+            else if (col === 'reminderName') val = row.name || '—';
+            else if (col === 'reminderPhone') {
+              val = row.phone ? `<span class="phone">${fmtPhone(row.phone)}</span>` : '—';
+            }
       else if (col === 'status') {
         const st = (row.status || '').toLowerCase();
         if (st === 'sent') val = '<span class="badge badge-active">Sent</span>';
@@ -967,11 +1016,24 @@ function renderTable(rows, columns, clickable) {
   });
 
   html += '</tbody></table>';
-  return html;
-}
+    return html;
+  }
 
-let currentAudio = null;
-function playRecording(url, btn) {
+  // Sort handler — called from onclick on sortable table headers
+  renderTable._sortKey = function(key) {
+    const cur = renderTable._sortState;
+    if (cur.key === key) {
+      cur.dir = cur.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      cur.key = key;
+      cur.dir = 'asc';
+    }
+    // Re-render from cached data
+    if (window.__allLeadsData) renderReport(window.__allLeadsData);
+  };
+
+  let currentAudio = null;
+  function playRecording(url, btn) {
   // If this specific recording is already playing, pause it and keep position
   if (currentAudio && currentAudio.src === url && !currentAudio.paused) {
     currentAudio.pause();
