@@ -196,12 +196,15 @@ def extract_ghl_inquiry(thread):
             return ' | '.join(out)
     return ''
 
-def get_reminder_stats(start_ct, end_ct):
+def get_reminder_stats(start_ct, end_ct, ghl_lookup=None):
     """Slot Open Reminders for the window.
     scheduled = waitlist sheet rows created in window (each -> Created row)
     sent = per-send events from poller log (each -> Sent row, enriched with
            preferred days from sheet lookup by phone/email)
-    rows = scheduled rows + sent rows (list length always = scheduled + sent)."""
+    rows = scheduled rows + sent rows (list length always = scheduled + sent).
+    ghl_lookup: dict with 'by_phone' (digits->{name,phone}) and 'by_email'
+    (email_lower->{name,phone}) for enriching rows with missing contact info."""
+    ghl_lookup = ghl_lookup or {'by_phone': {}, 'by_email': {}}
     stats = {'scheduled': 0, 'sent': 0, 'rows': []}
     # ── Load full waitlist for lookups ──
     sheet_rows = []
@@ -215,7 +218,10 @@ def get_reminder_stats(start_ct, end_ct):
         stats['sheet_error'] = str(e)
 
     # Build lookup: phone_digits -> preferred_days, email_lower -> preferred_days
+    # Also build sheet_lookup for name/phone enrichment from the sheet itself
     pref_by_phone, pref_by_email = {}, {}
+    sheet_name_by_phone, sheet_name_by_email = {}, {}
+    sheet_phone_by_email = {}
     for r in sheet_rows[1:]:
         if not r or not r[0]:
             continue
@@ -228,6 +234,7 @@ def get_reminder_stats(start_ct, end_ct):
         parts = list(parts) + [''] * max(0, 12 - len(parts))
         phone = parts[2] if len(parts) > 2 else ''
         email = parts[3] if len(parts) > 3 else ''
+        name = parts[1] if len(parts) > 1 else ''
         pref_days = parts[5] if len(parts) > 5 else ''
         pref_weekday = parts[6] if len(parts) > 6 else ''
         pref_combined = pref_days or pref_weekday
@@ -235,8 +242,45 @@ def get_reminder_stats(start_ct, end_ct):
             digits = re.sub(r'\D', '', phone)
             if digits:
                 pref_by_phone[digits] = pref_combined
+                if name and not sheet_name_by_phone.get(digits):
+                    sheet_name_by_phone[digits] = name
         if email:
-            pref_by_email[email.strip().lower()] = pref_combined
+            el = email.strip().lower()
+            pref_by_email[el] = pref_combined
+            if name and not sheet_name_by_email.get(el):
+                sheet_name_by_email[el] = name
+            if phone and not sheet_phone_by_email.get(el):
+                sheet_phone_by_email[el] = phone
+
+    def _enrich(name, phone, email):
+        """Fill in missing name/phone from GHL lookup or sheet cross-reference."""
+        if not name or not phone:
+            # Try GHL by phone first
+            if phone:
+                digits = re.sub(r'\D', '', phone)
+                ghl = ghl_lookup['by_phone'].get(digits)
+                if ghl:
+                    if not name and ghl.get('name'):
+                        name = ghl['name']
+                    if not phone and ghl.get('phone'):
+                        phone = ghl['phone']
+            # Try GHL by email
+            if email and (not name or not phone):
+                ghl = ghl_lookup['by_email'].get(email.strip().lower())
+                if ghl:
+                    if not name and ghl.get('name'):
+                        name = ghl['name']
+                    if not phone and ghl.get('phone'):
+                        phone = ghl['phone']
+            # Fall back to sheet cross-reference
+            if not name and phone:
+                digits = re.sub(r'\D', '', phone)
+                name = sheet_name_by_phone.get(digits, name)
+            if not name and email:
+                name = sheet_name_by_email.get(email.strip().lower(), name)
+            if not phone and email:
+                phone = sheet_phone_by_email.get(email.strip().lower(), phone)
+        return name, phone
 
     # ── Scheduled: waitlist sheet rows created in window ──
     for r in sheet_rows[1:]:
@@ -265,11 +309,15 @@ def get_reminder_stats(start_ct, end_ct):
         parts = list(parts) + [''] * max(0, 12 - len(parts))
         name = parts[1] if len(parts) > 1 else ''
         phone = parts[2] if len(parts) > 2 else ''
+        email = parts[3] if len(parts) > 3 else ''
         pref = parts[5] if len(parts) > 5 else ''
         pref_weekday = parts[6] if len(parts) > 6 else ''
+        # Enrich with GHL contact data if name/phone are missing or look like usernames
+        name, phone = _enrich(name, phone, email)
         stats['rows'].append({
             'name': name,
             'phone': phone,
+            'email': email,
             'prospect': name or phone,
             'preferred': pref or pref_weekday,
             'status': 'Created',
@@ -297,6 +345,8 @@ def get_reminder_stats(start_ct, end_ct):
                 # Look up preferred days from sheet by phone
                 digits = re.sub(r'\D', '', phone)
                 pref = pref_by_phone.get(digits, '')
+                # Enrich name/phone from GHL if incomplete
+                name, phone = _enrich(name, phone, '')
                 stats['sent'] += 1
                 stats['rows'].append({
                     'name': name, 'phone': phone,
@@ -311,10 +361,13 @@ def get_reminder_stats(start_ct, end_ct):
                 email = m_email.group(1) if m_email else ''
                 # Look up preferred days from sheet by email
                 pref = pref_by_email.get(email.strip().lower(), '')
+                # Enrich name/phone from GHL or sheet by email
+                name, phone = _enrich('', '', email)
                 stats['sent'] += 1
                 stats['rows'].append({
-                    'name': '', 'phone': '',
-                    'prospect': email,
+                    'name': name, 'phone': phone,
+                    'email': email,
+                    'prospect': name or phone or email,
                     'preferred': pref,
                     'status': 'Sent',
                     'timestamp': ts.isoformat(),
@@ -322,6 +375,51 @@ def get_reminder_stats(start_ct, end_ct):
     # Sort chronological
     stats['rows'].sort(key=lambda x: str(x.get('timestamp', '')))
     return stats
+
+def build_ghl_lookup(env):
+    """Build GHL contact lookup for enriching reminder rows.
+    Returns dict with 'by_phone' (digits->{name,phone}) and 'by_email'
+    (email_lower->{name,phone}). Loads ALL contacts, not just the date window."""
+    lookup = {'by_phone': {}, 'by_email': {}}
+    token = env.get('GHL_PRIVATE_TOKEN', '')
+    location_id = env.get('GHL_LOCATION_ID', '')
+    if not token or not location_id:
+        return lookup
+    page = 0
+    while page < 50:
+        body = json.dumps({"locationId": location_id, "pageLimit": 100, "page": page})
+        try:
+            data = curl_json(
+                "https://services.leadconnectorhq.com/contacts/search",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Version": "2021-07-28"
+                },
+                data=body,
+                method="POST"
+            )
+        except Exception:
+            break
+        contacts = data.get('contacts', [])
+        if not contacts:
+            break
+        for c in contacts:
+            name = f"{(c.get('firstName') or '').strip()} {(c.get('lastName') or '').strip()}".strip()
+            if not name:
+                name = (c.get('contactName') or '').strip()
+            phone = (c.get('phone') or '').strip()
+            email = (c.get('email') or '').strip().lower()
+            entry = {'name': name, 'phone': phone}
+            if phone:
+                digits = re.sub(r'\D', '', phone)
+                if digits and digits not in lookup['by_phone']:
+                    lookup['by_phone'][digits] = entry
+            if email and email not in lookup['by_email']:
+                lookup['by_email'][email] = entry
+        page += 1
+    return lookup
 
 def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
     email_idx = email_idx or {}
@@ -1501,7 +1599,7 @@ class Handler(BaseHTTPRequestHandler):
                         continue  # already counted as a platform lead
                 deduped.append(l)
             all_leads = deduped
-        reminders = get_reminder_stats(start_ct, end_ct)
+        reminders = get_reminder_stats(start_ct, end_ct, build_ghl_lookup(env))
         # SENT = outbound sent for GHL + platform leads only (Phone Leads excluded)
         sent = sum(1 for l in all_leads if l['status'] in ('responded', 'active') and l['channel'] != 'Phone Leads')
         replies = sum(1 for l in all_leads if l.get('prospectReplied'))
