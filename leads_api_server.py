@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Local API server for Leads Report — serves /api/leads on port 3979"""
-import json, os, re, subprocess, urllib.parse, base64, sys
+import json, os, re, subprocess, urllib.parse, base64, sys, time, hashlib
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -12,6 +12,109 @@ THREADS_DIR = Path('/home/ubuntu/.hermes/agents/mary/threads')
 THREADS_DIR_VAPI = Path('/home/ubuntu/.hermes/vapi-build/agents/mary/threads')
 SMS_THREADS_DIR = Path('/home/ubuntu/.hermes/sms-threads')
 VAPI_BUILD = '/home/ubuntu/.hermes/vapi-build'
+
+# ── Server-side cache (save upstream token/money usage) ─────────────────
+CACHE_DIR = Path('/home/ubuntu/.hermes/cache/leads_report')
+CACHE_LOG = CACHE_DIR / 'cache.log'
+GHL_TTL = 600          # 10 min — contacts/search is the biggest burn (double pagination)
+VAPI_TTL = 300         # 5 min  — matches feedback server's VAPI_CACHE_TTL
+TWILIO_TTL = 600       # 10 min
+WAITLIST_TTL = 900     # 15 min
+_LAST_CACHE_STATS = {}  # populated per-request for the `cache` observability field
+
+def _cache_key_path(key):
+    return CACHE_DIR / (re.sub(r'[^A-Za-z0-9_.-]', '_', key) + '.json')
+
+def _log_cache(event, key, age=None):
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        line = f"{datetime.now(timezone.utc).isoformat()} CACHE {event} key={key} age={age if age is not None else '-'}\n"
+        with open(CACHE_LOG, 'a') as f:
+            f.write(line)
+    except Exception:
+        pass
+
+def _cache_read(key, ttl_seconds):
+    """Return (hit: bool, value, age_seconds|None)."""
+    p = _cache_key_path(key)
+    if not p.exists():
+        return False, None, None
+    try:
+        data = json.loads(p.read_text())
+        age = time.time() - float(data.get('cached_at', 0))
+        if age < ttl_seconds:
+            return True, data.get('value'), round(age, 1)
+        return False, data.get('value'), round(age, 1)  # stale
+    except Exception:
+        return False, None, None
+
+def cache_fetch(key, ttl_seconds, fetch_fn, refresh=False):
+    """Disk-backed cache. Returns (value, info) with info={'hit': bool, 'age_seconds': float|None}."""
+    if not refresh:
+        hit, cached, age = _cache_read(key, ttl_seconds)
+        if hit:
+            _LAST_CACHE_STATS[key] = {'hit': True, 'age_seconds': age}
+            _log_cache('HIT', key, age)
+            return cached, {'hit': True, 'age_seconds': age}
+    value = fetch_fn()
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _cache_key_path(key).with_suffix('.tmp')
+        tmp.write_text(json.dumps({'cached_at': time.time(), 'value': value}, default=str))
+        os.replace(tmp, _cache_key_path(key))
+    except Exception:
+        pass
+    _LAST_CACHE_STATS[key] = {'hit': False, 'age_seconds': None}
+    _log_cache('MISS', key, None)
+    return value, {'hit': False, 'age_seconds': None}
+
+def memoized_curl(key_prefix, url, headers=None, data=None, method='GET', timeout=15, refresh=False, ttl=600):
+    """curl_json with disk caching. Cache key = prefix + hash(method+url+data) — excludes auth headers."""
+    payload = f"{method} {url} {data or ''}"
+    key = f"{key_prefix}_{hashlib.sha1(payload.encode()).hexdigest()[:16]}"
+    def _fetch():
+        try:
+            return curl_json(url, headers=headers, data=data, method=method, timeout=timeout)
+        except Exception:
+            return {}
+    return cache_fetch(key, ttl, _fetch, refresh=refresh)
+
+def _want_refresh(refresh_param, source):
+    if not refresh_param:
+        return False
+    tokens = {t.strip().lower() for t in str(refresh_param).split(',')}
+    return bool(tokens & {'1', 'all', source})
+
+def _ts_epoch(ts):
+    """Parse a timestamp to epoch seconds (UTC). Handles ISO-8601 (Z / ±HH:MM / ±HHMM / naive)
+    and RFC 2822 (Twilio). Returns None if unparseable."""
+    if not ts:
+        return None
+    s = str(ts).strip()
+    if not s:
+        return None
+    try:
+        t = s[:-1] + '+00:00' if s.endswith('Z') else s
+        dt = datetime.fromisoformat(t)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        pass
+    try:
+        t = re.sub(r'([+-]\d{2})(\d{2})$', r'\1:\2', s)
+        if t.endswith('Z'):
+            t = t[:-1] + '+00:00'
+        dt = datetime.fromisoformat(t)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        pass
+    try:
+        return parsedate_to_datetime(s).timestamp()
+    except Exception:
+        return None
 
 def curl_json(url, headers=None, data=None, method='GET', timeout=15):
     """Use curl subprocess for HTTP requests (GHL blocks Python urllib)"""
@@ -196,7 +299,7 @@ def extract_ghl_inquiry(thread):
             return ' | '.join(out)
     return ''
 
-def get_reminder_stats(start_ct, end_ct, ghl_lookup=None):
+def get_reminder_stats(start_ct, end_ct, ghl_lookup=None, refresh=False):
     """Slot Open Reminders for the window.
     scheduled = waitlist sheet rows created in window (each -> Created row)
     sent = per-send events from poller log (each -> Sent row, enriched with
@@ -209,11 +312,13 @@ def get_reminder_stats(start_ct, end_ct, ghl_lookup=None):
     # ── Load full waitlist for lookups ──
     sheet_rows = []
     try:
-        sys.path.insert(0, VAPI_BUILD + '/lib')
-        from google_sheets_oauth import sheets_get
-        with open(VAPI_BUILD + '/waitlist_sheet_meta.json') as f:
-            sheet_id = json.load(f)['sheet_id']
-        sheet_rows = sheets_get(sheet_id, 'Waitlist Prospects')
+        def _fetch_sheet():
+            sys.path.insert(0, VAPI_BUILD + '/lib')
+            from google_sheets_oauth import sheets_get
+            with open(VAPI_BUILD + '/waitlist_sheet_meta.json') as f:
+                sheet_id = json.load(f)['sheet_id']
+            return sheets_get(sheet_id, 'Waitlist Prospects')
+        sheet_rows, _sheet_info = cache_fetch('waitlist_sheet', WAITLIST_TTL, _fetch_sheet, refresh=refresh)
     except Exception as e:
         stats['sheet_error'] = str(e)
 
@@ -376,7 +481,7 @@ def get_reminder_stats(start_ct, end_ct, ghl_lookup=None):
     stats['rows'].sort(key=lambda x: str(x.get('timestamp', '')))
     return stats
 
-def build_ghl_lookup(env):
+def build_ghl_lookup(env, refresh=False):
     """Build GHL contact lookup for enriching reminder rows.
     Returns dict with 'by_phone' (digits->{name,phone}) and 'by_email'
     (email_lower->{name,phone}). Loads ALL contacts, not just the date window."""
@@ -388,20 +493,20 @@ def build_ghl_lookup(env):
     page = 0
     while page < 50:
         body = json.dumps({"locationId": location_id, "pageLimit": 100, "page": page})
-        try:
-            data = curl_json(
-                "https://services.leadconnectorhq.com/contacts/search",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Version": "2021-07-28"
-                },
-                data=body,
-                method="POST"
-            )
-        except Exception:
-            break
+        data, _info = memoized_curl(
+            'ghl',
+            "https://services.leadconnectorhq.com/contacts/search",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Version": "2021-07-28"
+            },
+            data=body,
+            method="POST",
+            ttl=GHL_TTL,
+            refresh=refresh
+        )
         contacts = data.get('contacts', [])
         if not contacts:
             break
@@ -421,7 +526,7 @@ def build_ghl_lookup(env):
         page += 1
     return lookup
 
-def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
+def get_ghl_leads(env, start_ct, end_ct, email_idx=None, refresh=False):
     email_idx = email_idx or {}
     token = env.get('GHL_PRIVATE_TOKEN', '')
     location_id = env.get('GHL_LOCATION_ID', '')
@@ -431,7 +536,8 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
     page = 0
     while page < 50:
         body = json.dumps({"locationId": location_id, "pageLimit": 100, "page": page})
-        data = curl_json(
+        data, _info = memoized_curl(
+            'ghl',
             "https://services.leadconnectorhq.com/contacts/search",
             headers={
                 "Authorization": f"Bearer {token}",
@@ -440,7 +546,9 @@ def get_ghl_leads(env, start_ct, end_ct, email_idx=None):
                 "Version": "2021-07-28"
             },
             data=body,
-            method="POST"
+            method="POST",
+            ttl=GHL_TTL,
+            refresh=refresh
         )
         contacts = data.get('contacts', [])
         if not contacts:
@@ -991,13 +1099,13 @@ def get_post_call_sms_status(env, phone, call_end_time):
     else:
         return "No post-call SMS sent"
 
-def get_vapi_leads(env, start_ct, end_ct):
+def get_vapi_leads(env, start_ct, end_ct, refresh=False):
     vapi_key = env.get('VAPI_PRIVATE_KEY', '')
     if not vapi_key:
         return [], []
     start_utc = start_ct.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
     url = f"https://api.vapi.ai/call?limit=200&createdAtGe={start_utc}"
-    data = curl_json(url, headers={"Authorization": f"Bearer {vapi_key}"})
+    data, _info = memoized_curl('vapi_calls', url, headers={"Authorization": f"Bearer {vapi_key}"}, ttl=VAPI_TTL, refresh=refresh)
     leads, non_leads = [], []
     calls = data if isinstance(data, list) else data.get('calls', [])
     for c in calls:
@@ -1067,10 +1175,11 @@ def get_vapi_leads(env, start_ct, end_ct):
                 if ghl_token and ghl_loc and phone:
                     phone_digits = re.sub(r'\D', '', phone)
                     search_body = json.dumps({"locationId": ghl_loc, "filters": [{"field": "phone", "operator": "eq", "value": phone_digits}], "pageLimit": 1, "page": 0})
-                    search_result = curl_json(
+                    search_result, _info = memoized_curl(
+                        'ghl',
                         "https://services.leadconnectorhq.com/contacts/search",
                         headers={"Authorization": f"Bearer {ghl_token}", "Accept": "application/json", "Content-Type": "application/json", "Version": "2021-07-28"},
-                        data=search_body, method="POST"
+                        data=search_body, method="POST", ttl=GHL_TTL, refresh=refresh
                     )
                     contacts = search_result.get('contacts', [])
                     if contacts:
@@ -1146,14 +1255,14 @@ def get_vapi_leads(env, start_ct, end_ct):
         })
     return leads, non_leads
 
-def get_sms_conversations(env, start_ct, end_ct):
+def get_sms_conversations(env, start_ct, end_ct, refresh=False):
     sid = env.get('TWILIO_ACCOUNT_SID', '')
     token = env.get('TWILIO_AUTH_TOKEN', '')
     if not sid or not token:
         return {}
     url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json?PageSize=1000"
     auth = base64.b64encode(f"{sid}:{token}".encode()).decode().strip()
-    data = curl_json(url, headers={"Authorization": f"Basic {auth}"})
+    data, _info = memoized_curl('twilio', url, headers={"Authorization": f"Basic {auth}"}, ttl=TWILIO_TTL, refresh=refresh)
     convos = {}
     bell_numbers = ['+17138682355', '+17138685335']
     for m in data.get('messages', []):
@@ -1532,7 +1641,7 @@ def fetch_vapi_comm_history(phone, env):
             continue
 
         call_id = c.get('id', '')
-        started_at = c.get('startedAt', '')
+        started_at = c.get('startedAt') or c.get('createdAt', '')
         summary = c.get('summary', '') or ''
         transcript_str = c.get('transcript', '')
 
@@ -1680,8 +1789,8 @@ def get_communications(phone, env):
             continue
         combined.append(t)
 
-    # Sort newest first
-    combined.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    # Sort oldest→newest by real epoch (string sort breaks on mixed ISO/RFC2822 formats)
+    combined.sort(key=lambda x: _ts_epoch(x.get('timestamp')) or 0)
 
     return {
         'communications': combined,
@@ -1759,13 +1868,21 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({'error': 'Invalid date'}).encode())
             return
         
+        # ── Cache control: ?refresh=1 (all) or ?refresh=ghl|vapi|twilio|waitlist ──
+        global _LAST_CACHE_STATS
+        _LAST_CACHE_STATS = {}
+        refresh_param = (params.get('refresh') or [''])[0].strip().lower()
+        refresh_all = refresh_param in ('1', 'all', 'true', 'yes')
+        def _rf(source):
+            return refresh_all or refresh_param == source
+
         env = load_env()
         email_idx, name_idx = get_thread_enrichment()
-        ghl = get_ghl_leads(env, start_ct, end_ct, email_idx)
+        ghl = get_ghl_leads(env, start_ct, end_ct, email_idx, refresh=_rf('ghl'))
         platform = get_platform_leads(env, start_ct, end_ct, name_idx)
-        vapi, non_leads = get_vapi_leads(env, start_ct, end_ct)
+        vapi, non_leads = get_vapi_leads(env, start_ct, end_ct, refresh=_rf('vapi'))
         all_leads = ghl + platform + vapi
-        convos = get_sms_conversations(env, start_ct, end_ct)
+        convos = get_sms_conversations(env, start_ct, end_ct, refresh=_rf('twilio'))
         all_leads = enrich_with_sms(all_leads, convos)
         # Roger (2026-08-12): cross-channel merge — same phone within 10 min
         # collapses to ONE published row (most recent wins, missing fields
@@ -1794,7 +1911,7 @@ class Handler(BaseHTTPRequestHandler):
                         continue  # already counted as a platform lead
                 deduped.append(l)
             all_leads = deduped
-        reminders = get_reminder_stats(start_ct, end_ct, build_ghl_lookup(env))
+        reminders = get_reminder_stats(start_ct, end_ct, build_ghl_lookup(env, refresh=_rf('ghl')), refresh=_rf('waitlist'))
         # SENT = outbound sent for GHL + platform leads only (Phone Leads excluded)
         sent = sum(1 for l in all_leads if l['status'] in ('responded', 'active') and l['channel'] != 'Phone Leads')
         replies = sum(1 for l in all_leads if l.get('prospectReplied'))
@@ -1807,7 +1924,7 @@ class Handler(BaseHTTPRequestHandler):
             'phone': sum(1 for l in all_leads if l['channel'] == 'Phone Leads'),
             'reminders': reminders,
         }
-        result = {'leads': all_leads, 'nonLeadCalls': non_leads, 'summary': summary}
+        result = {'leads': all_leads, 'nonLeadCalls': non_leads, 'summary': summary, 'cache': dict(_LAST_CACHE_STATS)}
         
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')

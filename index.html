@@ -1202,7 +1202,7 @@ function mergeCommsIntoThread(thread, comms) {
     deduped.push(m);
   }
   deduped.sort(function(a, b) {
-    return (b.timestamp || '').localeCompare(a.timestamp || '');
+    return tsEpoch(a.timestamp) - tsEpoch(b.timestamp);
   });
   thread.messages = deduped;
   thread.merged_channels = true;
@@ -1226,7 +1226,7 @@ function buildCommsThread(lead, comms) {
     };
   });
   msgs.sort(function(a, b) {
-    return (b.timestamp || '').localeCompare(a.timestamp || '');
+    return tsEpoch(a.timestamp) - tsEpoch(b.timestamp);
   });
   return {
     thread_id: 'comms-' + (lead.phone || '').replace(/\D/g, ''),
@@ -1510,6 +1510,18 @@ function escapeHtml(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/\n/g, '<br>');
+}
+
+// Parse a timestamp to epoch ms for correct chronological sorting.
+// Handles ISO-8601 (Z / ±HH:MM / ±HHMM / naive) and RFC-2822 (Twilio).
+function tsEpoch(ts) {
+  if (!ts) return 0;
+  var s = String(ts).trim();
+  if (!s) return 0;
+  if (/Z$/.test(s)) s = s.slice(0, -1) + '+00:00';
+  else if (!/[+-]\d{2}:?\d{2}$/.test(s) && /^\d{4}-\d{2}-\d{2}[T ]/.test(s)) s += 'Z'; // naive -> assume UTC
+  var t = Date.parse(s);
+  return isNaN(t) ? 0 : t;
 }
 
 function formatTime(ts) {

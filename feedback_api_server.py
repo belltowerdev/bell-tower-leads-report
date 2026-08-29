@@ -34,6 +34,7 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import urllib.parse
+from email.utils import parsedate_to_datetime
 
 # Paths
 HERMES_ROOT = Path('/home/ubuntu/.hermes')
@@ -53,6 +54,38 @@ VAPI_CACHE_TTL = 300  # 5 minutes
 FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
 TRAINING_DIR.mkdir(parents=True, exist_ok=True)
 (HERMES_ROOT / 'cache').mkdir(parents=True, exist_ok=True)
+
+
+def _ts_epoch(ts):
+    """Parse a timestamp to epoch seconds (UTC). Handles ISO-8601 (Z / ±HH:MM / ±HHMM / naive)
+    and RFC 2822 (Twilio). Returns None if unparseable."""
+    if not ts:
+        return None
+    s = str(ts).strip()
+    if not s:
+        return None
+    try:
+        t = s[:-1] + '+00:00' if s.endswith('Z') else s
+        dt = datetime.fromisoformat(t)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        pass
+    try:
+        t = re.sub(r'([+-]\d{2})(\d{2})$', r'\1:\2', s)
+        if t.endswith('Z'):
+            t = t[:-1] + '+00:00'
+        dt = datetime.fromisoformat(t)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        pass
+    try:
+        return parsedate_to_datetime(s).timestamp()
+    except Exception:
+        return None
 
 
 def _classify_email_source(filename, thread_data):
@@ -332,8 +365,11 @@ def _format_vapi_call_as_thread(call):
             except Exception:
                 pass
 
-    # Combine call transcript + SMS messages
+    # Combine call transcript + SMS messages, then merge chronologically (oldest→newest).
+    # Without this, the voice transcript (all stamped with the call createdAt) sits above
+    # SMS follow-ups regardless of their actual send time.
     all_messages = transcript_parts + sms_messages
+    all_messages.sort(key=lambda m: _ts_epoch(m.get('timestamp')) or 0)
 
     return {
         'thread_id': f'vapi-{call_id}',
@@ -547,10 +583,7 @@ def _merge_sms_into_thread(formatted: dict) -> dict:
     combined = formatted['messages'] + sms_msgs
 
     def _ts(m):
-        try:
-            return datetime.fromisoformat((m.get('timestamp') or '').replace('Z', '+00:00'))
-        except Exception:
-            return datetime.min.replace(tzinfo=timezone.utc)
+        return _ts_epoch(m.get('timestamp')) or 0
 
     combined.sort(key=_ts)
     formatted['messages'] = combined
