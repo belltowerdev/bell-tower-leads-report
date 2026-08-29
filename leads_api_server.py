@@ -1933,8 +1933,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(result, default=str).encode())
     
     def do_POST(self):
-        """Proxy POST /api/threads/* and /api/feedback* to feedback API (3980)."""
+        """Handle POST endpoints: /api/send-message, proxy threads/feedback to 3980."""
         parsed = urllib.parse.urlparse(self.path)
+        
+        # ── Send Message endpoint ───────────────────────────────────
+        if parsed.path == '/api/send-message':
+            self.handle_send_message()
+            return
+        
         if parsed.path.startswith('/api/threads/') or parsed.path.startswith('/api/feedback') or parsed.path.startswith('/api/training') or parsed.path.startswith('/api/tools'):
             import urllib.request as _urllib_req
             try:
@@ -1959,6 +1965,162 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_response(404)
         self.end_headers()
+
+    # ── Send Message: email (SendGrid) + SMS (Twilio) as Mary ──────
+    def _send_email_via_sendgrid(self, to_address, subject, body, env):
+        """Send email from planning@belltoweron34th.com via SendGrid API."""
+        sg_key = env.get('SENDGRID_API_KEY', '')
+        if not sg_key:
+            return {'ok': False, 'error': 'SendGrid API key not configured'}
+        payload = json.dumps({
+            "personalizations": [{"to": [{"email": to_address}]}],
+            "from": {"email": "planning@belltoweron34th.com", "name": "Mary"},
+            "subject": subject,
+            "content": [{"type": "text/plain", "value": body}],
+        })
+        try:
+            result = subprocess.run(
+                ['curl', '-s', '-X', 'POST', 'https://api.sendgrid.com/v3/mail/send',
+                 '-H', f'Authorization: Bearer {sg_key}',
+                 '-H', 'Content-Type: application/json',
+                 '-d', payload],
+                capture_output=True, text=True, timeout=15)
+            if result.returncode == 0 and result.stdout.strip() == '':
+                return {'ok': True, 'channel': 'email'}
+            return {'ok': False, 'error': f'SendGrid returned: {result.stdout[:200]}'}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def _send_sms_via_twilio(self, to_number, body, env):
+        """Send SMS from Mary's Twilio number."""
+        sid = env.get('TWILIO_ACCOUNT_SID', '')
+        token = env.get('TWILIO_AUTH_TOKEN', '')
+        from_number = env.get('TWILIO_SMS_FROM', '')  # Mary's SMS number
+        if not sid or not token or not from_number:
+            return {'ok': False, 'error': 'Twilio credentials or from-number not configured'}
+        auth = base64.b64encode(f"{sid}:{token}".encode()).decode()
+        payload = f"To={urllib.parse.quote(to_number)}&From={urllib.parse.quote(from_number)}&Body={urllib.parse.quote(body)}"
+        try:
+            result = subprocess.run(
+                ['curl', '-s', '-X', 'POST',
+                 f'https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json',
+                 '-H', f'Authorization: Basic {auth}',
+                 '-H', 'Content-Type: application/x-www-form-urlencoded',
+                 '-d', payload],
+                capture_output=True, text=True, timeout=15)
+            resp = json.loads(result.stdout) if result.stdout.strip() else {}
+            if resp.get('sid'):
+                return {'ok': True, 'channel': 'sms', 'sid': resp.get('sid')}
+            return {'ok': False, 'error': resp.get('message', result.stdout[:200])}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def _log_send(self, prospect_name, prospect_phone, prospect_email, channel, body, result):
+        """Log the send to the audit log and append to thread if possible."""
+        log_dir = Path('/home/ubuntu/.hermes/send-log')
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_entry = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'prospect_name': prospect_name,
+                'prospect_phone': prospect_phone,
+                'prospect_email': prospect_email,
+                'channel': channel,
+                'body': body,
+                'result': result,
+            }
+            # Write to daily log
+            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            log_file = log_dir / f'sends-{today}.jsonl'
+            with open(log_file, 'a') as f:
+                f.write(json.dumps(log_entry, default=str) + '\n')
+            
+            # Append to thread file if we can find it
+            if prospect_phone:
+                digits = re.sub(r'\D', '', prospect_phone)
+                # Try SMS threads first
+                sms_file = SMS_THREADS_DIR / f'{digits}.json'
+                if sms_file.exists():
+                    try:
+                        with open(sms_file) as f:
+                            t = json.load(f)
+                        t.setdefault('messages', []).append({
+                            'timestamp': datetime.now(timezone.utc).isoformat(),
+                            'direction': 'outbound',
+                            'text': body,
+                            'channel': channel,
+                            'from': 'Mary (manual send)',
+                        })
+                        with open(sms_file, 'w') as f:
+                            json.dump(t, f, indent=2, default=str)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def handle_send_message(self):
+        """POST /api/send-message
+        Body: {prospect_name, prospect_phone, prospect_email, channel: 'email'|'sms'|'both', message}
+        Sends email via SendGrid, SMS via Twilio, both from Mary."""
+        content_len = int(self.headers.get('Content-Length', 0))
+        post_body = self.rfile.read(content_len) if content_len > 0 else b''
+        try:
+            req = json.loads(post_body)
+        except Exception:
+            self.send_json(400, {'error': 'Invalid JSON'})
+            return
+        
+        prospect_name = (req.get('prospect_name') or '').strip()
+        prospect_phone = (req.get('prospect_phone') or '').strip()
+        prospect_email = (req.get('prospect_email') or '').strip()
+        channel = (req.get('channel') or 'both').strip().lower()
+        message = (req.get('message') or '').strip()
+        
+        if not message:
+            self.send_json(400, {'error': 'Message is required'})
+            return
+        if channel not in ('email', 'sms', 'both'):
+            self.send_json(400, {'error': 'Channel must be email, sms, or both'})
+            return
+        
+        env = load_env()
+        results = []
+        subject = f'Message from Mary at The Bell Tower on 34th'
+        
+        # Email
+        if channel in ('email', 'both'):
+            if not prospect_email:
+                results.append({'channel': 'email', 'ok': False, 'error': 'No email address for this prospect'})
+            else:
+                r = self._send_email_via_sendgrid(prospect_email, subject, message, env)
+                results.append(r)
+                if r.get('ok'):
+                    self._log_send(prospect_name, prospect_phone, prospect_email, 'email', message, r)
+        
+        # SMS
+        if channel in ('sms', 'both'):
+            if not prospect_phone:
+                results.append({'channel': 'sms', 'ok': False, 'error': 'No phone number for this prospect'})
+            else:
+                r = self._send_sms_via_twilio(prospect_phone, message, env)
+                results.append(r)
+                if r.get('ok'):
+                    self._log_send(prospect_name, prospect_phone, prospect_email, 'sms', message, r)
+        
+        all_ok = all(r.get('ok', False) for r in results)
+        status = 200 if all_ok else (502 if not any(r.get('ok', False) for r in results) else 207)
+        self.send_json(status, {
+            'sent': any(r.get('ok', False) for r in results),
+            'results': results,
+            'message': message,
+        })
+    
+    def send_json(self, status, data):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data, default=str).encode())
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests."""
