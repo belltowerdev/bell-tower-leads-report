@@ -2015,8 +2015,81 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
+    def _thread_file_key(self, prospect_phone, prospect_email):
+        """Return the thread-file key that matches the feedback reader's naming.
+
+        The feedback API (feedback_api_server.py) reads SMS threads from
+        ~/.hermes/sms-threads/{+1<last10>}.json — an E.164-ish key with the
+        leading '+1'. The previous code wrote to '{digits}.json' (no '+1'),
+        so the file never matched and the append silently no-oped.
+        """
+        if prospect_phone:
+            digits = re.sub(r'\D', '', prospect_phone)
+            if len(digits) >= 10:
+                return f'+1{digits[-10:]}'
+            if digits:
+                return f'+{digits}'
+        if prospect_email:
+            # Email-only lead: key by a sanitized email so the reader can match
+            # it via lead_data.prospect_email.
+            return 'email-' + re.sub(r'[^A-Za-z0-9_.-]', '_', prospect_email.strip().lower())
+        return None
+
+    def _append_to_thread(self, prospect_name, prospect_phone, prospect_email, channel, body):
+        """Persist an outbound 'Send as Mary' message into the prospect's thread.
+
+        Creates the thread file if it doesn't exist yet (fresh leads), and
+        writes identity fields the reader uses to match + display the thread.
+        """
+        key = self._thread_file_key(prospect_phone, prospect_email)
+        if not key:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        SMS_THREADS_DIR.mkdir(parents=True, exist_ok=True)
+        thread_path = SMS_THREADS_DIR / f'{key}.json'
+
+        thread = {}
+        if thread_path.exists():
+            try:
+                with open(thread_path) as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    thread = loaded
+            except Exception:
+                thread = {}
+
+        # Identity fields the reader (handle_find_thread / format_thread_for_display) matches on
+        thread.setdefault('thread_id', key)
+        if prospect_phone:
+            thread.setdefault('phone', prospect_phone)
+            thread.setdefault('customer_phone', prospect_phone)
+        ld = thread.setdefault('lead_data', {})
+        if not isinstance(ld, dict):
+            ld = {}
+            thread['lead_data'] = ld
+        if prospect_email:
+            ld.setdefault('prospect_email', prospect_email)
+        if prospect_name:
+            ld.setdefault('prospect_name', prospect_name)
+
+        message = {
+            'timestamp': now_iso,
+            'direction': 'outbound',
+            'text': body,
+            'channel': channel,
+            'from': 'Mary (manual send)',
+            'to': (prospect_email if channel == 'email' else prospect_phone) or '',
+        }
+
+        if not isinstance(thread.get('messages'), list):
+            thread['messages'] = []
+        thread['messages'].append(message)
+
+        with open(thread_path, 'w') as f:
+            json.dump(thread, f, indent=2, default=str)
+
     def _log_send(self, prospect_name, prospect_phone, prospect_email, channel, body, result):
-        """Log the send to the audit log and append to thread if possible."""
+        """Log the send to the audit log and persist it into the prospect thread."""
         log_dir = Path('/home/ubuntu/.hermes/send-log')
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -2034,27 +2107,13 @@ class Handler(BaseHTTPRequestHandler):
             log_file = log_dir / f'sends-{today}.jsonl'
             with open(log_file, 'a') as f:
                 f.write(json.dumps(log_entry, default=str) + '\n')
-            
-            # Append to thread file if we can find it
-            if prospect_phone:
-                digits = re.sub(r'\D', '', prospect_phone)
-                # Try SMS threads first
-                sms_file = SMS_THREADS_DIR / f'{digits}.json'
-                if sms_file.exists():
-                    try:
-                        with open(sms_file) as f:
-                            t = json.load(f)
-                        t.setdefault('messages', []).append({
-                            'timestamp': datetime.now(timezone.utc).isoformat(),
-                            'direction': 'outbound',
-                            'text': body,
-                            'channel': channel,
-                            'from': 'Mary (manual send)',
-                        })
-                        with open(sms_file, 'w') as f:
-                            json.dump(t, f, indent=2, default=str)
-                    except Exception:
-                        pass
+        except Exception:
+            pass
+
+        # Persist the outbound message into the prospect's thread file so it
+        # shows up in the communication thread (both email and SMS channels).
+        try:
+            self._append_to_thread(prospect_name, prospect_phone, prospect_email, channel, body)
         except Exception:
             pass
 
