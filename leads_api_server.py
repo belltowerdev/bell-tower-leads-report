@@ -1967,27 +1967,64 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     # ── Send Message: email (SendGrid) + SMS (Twilio) as Mary ──────
-    def _send_email_via_sendgrid(self, to_address, subject, body, env):
-        """Send email from planning@belltoweron34th.com via SendGrid API."""
-        sg_key = env.get('SENDGRID_API_KEY', '')
-        if not sg_key:
-            return {'ok': False, 'error': 'SendGrid API key not configured'}
-        payload = json.dumps({
-            "personalizations": [{"to": [{"email": to_address}]}],
-            "from": {"email": "planning@belltoweron34th.com", "name": "Mary"},
-            "subject": subject,
-            "content": [{"type": "text/plain", "value": body}],
-        })
+    def _send_email_via_gmail(self, to_address, subject, body, env):
+        """Send email from planning@belltoweron34th.com via Gmail API (the production
+        path for planning@ outbound — matches lib/gmail_sender.py). Uses the
+        planning@ OAuth refresh token already present in the credential cache."""
+        from email.mime.text import MIMEText
+        from email.utils import formatdate
+        client_id = env.get('BELL_TOWER_GOOGLE_CLIENT_ID', '')
+        client_secret = env.get('BELL_TOWER_GOOGLE_CLIENT_SECRET', '')
+        refresh_token = env.get('GOG_REFRESH_PLANNING_WORKSPACE', '') or env.get('GOG_REFRESH_PLANNING', '')
+        if not client_id or not client_secret or not refresh_token:
+            return {'ok': False, 'error': 'Gmail OAuth credentials not configured'}
         try:
-            result = subprocess.run(
-                ['curl', '-s', '-X', 'POST', 'https://api.sendgrid.com/v3/mail/send',
-                 '-H', f'Authorization: Bearer {sg_key}',
-                 '-H', 'Content-Type: application/json',
-                 '-d', payload],
+            # 1) Exchange refresh token for an access token
+            tok = subprocess.run(
+                ['curl', '-s', '-X', 'POST', 'https://oauth2.googleapis.com/token',
+                 '-H', 'Content-Type: application/x-www-form-urlencoded',
+                 '-d', urllib.parse.urlencode({
+                     'client_id': client_id,
+                     'client_secret': client_secret,
+                     'refresh_token': refresh_token,
+                     'grant_type': 'refresh_token',
+                 })],
                 capture_output=True, text=True, timeout=15)
-            if result.returncode == 0 and result.stdout.strip() == '':
-                return {'ok': True, 'channel': 'email'}
-            return {'ok': False, 'error': f'SendGrid returned: {result.stdout[:200]}'}
+            try:
+                tok_data = json.loads(tok.stdout) if tok.stdout.strip() else {}
+            except Exception:
+                tok_data = {}
+            access_token = tok_data.get('access_token', '')
+            if not access_token:
+                return {'ok': False, 'error': f"Gmail token refresh failed: {tok.stdout[:200]}"}
+            # 2) Build RFC822 message from planning@ with Mary signature
+            sig = "\n\nMary\nVenue Advisor\nThe Bell Tower on 34th"
+            _low = (body or '').lower().strip()
+            _has_sig = ('mary' in _low[-100:] and 'bell tower' in _low[-100:])
+            full_body = body if _has_sig else body + sig
+            msg = MIMEText(full_body, 'plain', 'utf-8')
+            msg['to'] = to_address
+            msg['from'] = 'planning@belltoweron34th.com'
+            msg['subject'] = subject
+            msg['date'] = formatdate(localtime=True)
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+            # 3) Send via Gmail API
+            send = subprocess.run(
+                ['curl', '-s', '-X', 'POST',
+                 'https://www.googleapis.com/gmail/v1/users/me/messages/send',
+                 '-H', f'Authorization: Bearer {access_token}',
+                 '-H', 'Content-Type: application/json',
+                 '-d', json.dumps({'raw': raw})],
+                capture_output=True, text=True, timeout=15)
+            if send.returncode != 0 or not send.stdout.strip():
+                return {'ok': False, 'error': f"Gmail send failed: {send.stdout[:200] or send.stderr[:200]}"}
+            try:
+                send_data = json.loads(send.stdout)
+            except Exception:
+                send_data = {}
+            if send_data.get('id'):
+                return {'ok': True, 'channel': 'email', 'message_id': send_data.get('id')}
+            return {'ok': False, 'error': f"Gmail send failed: {send.stdout[:200]}"}
         except Exception as e:
             return {'ok': False, 'error': str(e)}
 
@@ -1995,7 +2032,7 @@ class Handler(BaseHTTPRequestHandler):
         """Send SMS from Mary's Twilio number."""
         sid = env.get('TWILIO_ACCOUNT_SID', '')
         token = env.get('TWILIO_AUTH_TOKEN', '')
-        from_number = env.get('TWILIO_SMS_FROM', '')  # Mary's SMS number
+        from_number = env.get('TWILIO_FROM_NUMBER') or env.get('TWILIO_SMS_FROM') or '+17138682355'  # Mary's SMS number (713-868-BELL)
         if not sid or not token or not from_number:
             return {'ok': False, 'error': 'Twilio credentials or from-number not configured'}
         auth = base64.b64encode(f"{sid}:{token}".encode()).decode()
@@ -2151,7 +2188,7 @@ class Handler(BaseHTTPRequestHandler):
             if not prospect_email:
                 results.append({'channel': 'email', 'ok': False, 'error': 'No email address for this prospect'})
             else:
-                r = self._send_email_via_sendgrid(prospect_email, subject, message, env)
+                r = self._send_email_via_gmail(prospect_email, subject, message, env)
                 results.append(r)
                 if r.get('ok'):
                     self._log_send(prospect_name, prospect_phone, prospect_email, 'email', message, r)
@@ -2166,9 +2203,11 @@ class Handler(BaseHTTPRequestHandler):
                 if r.get('ok'):
                     self._log_send(prospect_name, prospect_phone, prospect_email, 'sms', message, r)
         
-        all_ok = all(r.get('ok', False) for r in results)
-        status = 200 if all_ok else (502 if not any(r.get('ok', False) for r in results) else 207)
-        self.send_json(status, {
+        # Always respond 200 — the frontend inspects per-channel `results`, not the
+        # HTTP status. Returning 502 for a send failure made Cloudflare Tunnel
+        # replace the JSON body with a CORS-less "error code: 502" page, which the
+        # browser surfaced as "Network Error: Failed to fetch".
+        self.send_json(200, {
             'sent': any(r.get('ok', False) for r in results),
             'results': results,
             'message': message,
